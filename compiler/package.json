@@ -1,0 +1,33 @@
+{
+  "name": "@cadence/compiler",
+  "version": "0.1.0",
+  "description": "EPUB3 Media Overlays compiler for Cadence",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "cadence-compile": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "compile": "tsx src/index.ts compile"
+  },
+  "dependencies": {
+    "archiver": "^7.0.0",
+    "commander": "^12.1.0",
+    "fast-xml-parser": "^4.5.0",
+    "parse5": "^7.2.1",
+    "playwright": "^1.49.0",
+    "yauzl": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.0",
+    "@types/node": "^22.10.0",
+    "@types/yauzl": "^2.10.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

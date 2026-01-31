@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  Custom hardware profile for Supernote Manta A5 X2
+  Copy to: ~/.android/devices/<user>/supernote-manta.xml
+  Or import via Android Studio Device Manager
+-->
+<d:devices xmlns:d="http://schemas.android.com/sdk/devices/7" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <d:device>
+    <d:name>Supernote Manta A5 X2</d:name>
+    <d:id>supernote_manta_a5x2</d:id>
+    <d:manufacturer>Ratta</d:manufacturer>
+    <d:hardware>
+      <d:screen>
+        <d:screen-size>xlarge</d:screen-size>
+        <d:diagonal-length>10.70</d:diagonal-length>
+        <d:pixel-density>xhdpi</d:pixel-density>
+        <d:screen-ratio>long</d:screen-ratio>
+        <d:dimensions>
+          <d:x-dimension>1920</d:x-dimension>
+          <d:y-dimension>2560</d:y-dimension>
+        </d:dimensions>
+        <d:xdpi>300</d:xdpi>
+        <d:ydpi>300</d:ydpi>
+        <d:touch>
+          <d:multitouch>jazz-hands</d:multitouch>
+          <d:mechanism>finger</d:mechanism>
+          <d:screen-type>capacitive</d:screen-type>
+        </d:touch>
+      </d:screen>
+      <d:networking>
+        Wifi
+      </d:networking>
+      <d:sensors>
+        Accelerometer
+      </d:sensors>
+      <d:mic>true</d:mic>
+      <d:camera>
+        <d:location>none</d:location>
+        <d:autofocus>none</d:autofocus>
+        <d:flash>none</d:flash>
+      </d:camera>
+      <d:keyboard>nokeys</d:keyboard>
+      <d:nav>nonav</d:nav>
+      <d:ram unit="GiB">4</d:ram>
+      <d:buttons>soft</d:buttons>
+      <d:internal-storage unit="GiB">32</d:internal-storage>
+      <d:removable-storage unit="GiB">0</d:removable-storage>
+      <d:cpu>ARM</d:cpu>
+      <d:gpu>Mali</d:gpu>
+      <d:abi>arm64-v8a</d:abi>
+      <d:power>battery</d:power>
+    </d:hardware>
+    <d:software>
+      <d:api-level>30</d:api-level>
+      <d:live-wallpaper-support>false</d:live-wallpaper-support>
+      <d:bluetooth-profiles/>
+      <d:gl-version>3.0</d:gl-version>
+      <d:gl-extensions/>
+      <d:status-bar>false</d:status-bar>
+    </d:software>
+    <d:state name="Portrait" default="true">
+      <d:description>The device in portrait orientation</d:description>
+      <d:screen-orientation>port</d:screen-orientation>
+      <d:keyboard-state>keyssoft</d:keyboard-state>
+      <d:nav-state>navhidden</d:nav-state>
+    </d:state>
+  </d:device>
+</d:devices>

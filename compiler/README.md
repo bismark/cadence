@@ -1,0 +1,111 @@
+# Cadence Compiler
+
+Compiles EPUB3 Media Overlays into Cadence bundles for synchronized text+audio playback.
+
+## Prerequisites
+
+- Node.js 18+
+- npm
+
+## Installation
+
+```bash
+npm install
+npx playwright install chromium
+```
+
+## Building
+
+```bash
+npm run build
+```
+
+## Usage
+
+```bash
+# Compile an EPUB to a ZIP bundle
+node dist/index.js compile -i path/to/book.epub
+
+# Compile to uncompressed directory (useful for debugging)
+node dist/index.js compile -i path/to/book.epub --no-zip
+
+# Specify output path
+node dist/index.js compile -i path/to/book.epub -o output.bundle.zip
+
+# Use a specific device profile
+node dist/index.js compile -i path/to/book.epub -p supernote-manta-a5x2
+```
+
+## Running Tests
+
+### Manual Testing
+
+Run the compiler on the test EPUB with media overlays:
+
+```bash
+npm run build
+node dist/index.js compile -i test/fixtures/Advanced-Accessibility-Tests-Media-Overlays-v1.0.0.epub --no-zip
+```
+
+Expected output:
+```
+Cadence Compiler v0.1.0
+========================
+...
+Step 9: Validating output...
+  All checks passed
+
+Compilation complete!
+  Chapters: 3
+  Pages: 10
+  Spans: 121
+```
+
+### Validation
+
+The compiler runs automatic validation after compilation (Step 9) that checks for:
+
+- At least one span was extracted
+- At least one page was generated
+- No duplicate span IDs
+- Every span has a page assignment
+- All rects have positive width/height
+- All rects have non-negative x,y coordinates
+- All rects fit within content bounds
+
+Warnings are logged but don't fail compilation. Errors indicate fatal issues.
+
+### Inspecting Output
+
+After compiling with `--no-zip`, inspect the bundle directory:
+
+```bash
+# View metadata
+cat test/fixtures/Advanced-Accessibility-Tests-Media-Overlays-v1.0.0.bundle/meta.json
+
+# View spans
+head test/fixtures/Advanced-Accessibility-Tests-Media-Overlays-v1.0.0.bundle/spans.jsonl
+
+# View a page's span rectangles
+cat test/fixtures/Advanced-Accessibility-Tests-Media-Overlays-v1.0.0.bundle/pages/tobi_spine_3_p0001.json
+```
+
+## Project Structure
+
+```
+src/
+  index.ts           # CLI entry point
+  types.ts           # TypeScript interfaces
+  validation.ts      # Output validation
+  epub/
+    container.ts     # EPUB ZIP reading
+    opf.ts           # OPF package parsing
+    smil.ts          # SMIL media overlay parsing
+    xhtml.ts         # XHTML normalization
+  layout/
+    paginate.ts      # Playwright-based pagination
+  bundle/
+    writer.ts        # Bundle output
+  device-profiles/
+    profiles.ts      # Device configurations
+```

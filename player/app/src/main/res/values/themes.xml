@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- E-ink optimized theme: pure black and white -->
+    <style name="Theme.CadencePlayer" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/white</item>
+        <item name="android:navigationBarColor">@android:color/white</item>
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:colorBackground">@android:color/white</item>
+        <!-- Disable animations for e-ink -->
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>
