@@ -114,18 +114,41 @@ data class CadenceBundle(
     val audioPath: String get() = "$basePath/audio.opus"
 
     /**
-     * Find the span active at a given timestamp.
+     * Find the span active at a given timestamp using binary search.
      * Timestamps are global offsets into the single audio.opus file.
+     * Spans are sorted by clipBeginMs, so we binary search for the insertion point
+     * and check if the timestamp falls within that span's range.
      */
     fun findSpanAtTime(timestampMs: Double): SpanEntry? {
-        return spans.find { span ->
-            timestampMs >= span.clipBeginMs &&
-            timestampMs < span.clipEndMs
-        }
+        if (spans.isEmpty()) return null
+        
+        // Binary search returns index if exact match, or -(insertionPoint + 1) if not found
+        val index = spans.binarySearchBy(timestampMs) { it.clipBeginMs }
+        
+        // Convert to the span that could contain this timestamp
+        // If exact match, use that index; otherwise, use the span before insertion point
+        val spanIndex = if (index >= 0) index else -(index + 1) - 1
+        
+        if (spanIndex < 0) return null
+        
+        val span = spans[spanIndex]
+        return if (timestampMs < span.clipEndMs) span else null
     }
 
     /**
      * Get page by index
      */
     fun getPage(index: Int): Page? = pages.getOrNull(index)
+
+    /**
+     * Lazy index for O(1) span lookups by ID
+     */
+    private val spanIndex: Map<String, SpanEntry> by lazy {
+        spans.associateBy { it.id }
+    }
+
+    /**
+     * Get span by ID in O(1) time
+     */
+    fun getSpanById(id: String): SpanEntry? = spanIndex[id]
 }

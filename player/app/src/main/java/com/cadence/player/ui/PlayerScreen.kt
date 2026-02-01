@@ -147,7 +147,7 @@ fun PlayerScreen(
                     debugMode = debugMode,
                     onSpanTap = { spanId ->
                         // Find the span and seek to its position
-                        bundle.spans.find { it.id == spanId }?.let { span ->
+                        bundle.getSpanById(spanId)?.let { span ->
                             activeSpan = span
                             // Seek slightly past clipBegin to avoid boundary precision issues
                             // (clipBeginMs is Double, but seekTo takes Long - truncation can land us
@@ -188,7 +188,7 @@ fun PlayerScreen(
                     if (currentPageIndex > 0) {
                         currentPageIndex--
                         bundle.getPage(currentPageIndex)?.firstSpanId?.let { spanId ->
-                            bundle.spans.find { it.id == spanId }?.let { span ->
+                            bundle.getSpanById(spanId)?.let { span ->
                                 activeSpan = span
                                 audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
                             }
@@ -199,7 +199,7 @@ fun PlayerScreen(
                     if (currentPageIndex < totalPages - 1) {
                         currentPageIndex++
                         bundle.getPage(currentPageIndex)?.firstSpanId?.let { spanId ->
-                            bundle.spans.find { it.id == spanId }?.let { span ->
+                            bundle.getSpanById(spanId)?.let { span ->
                                 activeSpan = span
                                 audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
                             }
