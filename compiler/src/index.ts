@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import { resolve, basename } from 'node:path';
+import { createHash } from 'node:crypto';
 import { openEPUB } from './epub/container.js';
 import { parseOPF, getSpineXHTMLFiles, getAudioFiles } from './epub/opf.js';
 import { parseChapterSMIL } from './epub/smil.js';
@@ -175,8 +176,21 @@ async function compileEPUB(
     // Step 8: Write bundle
     console.log('Step 8: Writing bundle...');
 
+    // Generate stable bundle ID from dc:identifier or fallback to hash
+    let bundleId: string;
+    if (opf.identifier && opf.identifier.trim()) {
+      // Use dc:identifier (often ISBN) - clean it up
+      bundleId = opf.identifier.trim().replace(/\s+/g, '-');
+    } else {
+      // Fallback: hash of title + spine order for deterministic ID
+      const spineIds = opf.spine.map((s) => s.idref).join(',');
+      const hashInput = `${opf.title}|${spineIds}`;
+      bundleId = createHash('sha256').update(hashInput).digest('hex').slice(0, 16);
+    }
+
     const meta: BundleMeta = {
       bundleVersion: '1.0.0',
+      bundleId,
       profile: profile.name,
       title: opf.title,
       pages: pages.length,

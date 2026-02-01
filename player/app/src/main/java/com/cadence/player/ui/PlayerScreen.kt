@@ -18,12 +18,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.cadence.player.audio.AudioPlayer
 import com.cadence.player.data.CadenceBundle
-import com.cadence.player.data.Page
+import com.cadence.player.data.PlaybackPreferences
 import com.cadence.player.data.SpanEntry
 import kotlinx.coroutines.delay
 
 /**
- * Main player screen
+ * Main player screen - simplified with single audio file
  */
 @Composable
 fun PlayerScreen(
@@ -32,50 +32,75 @@ fun PlayerScreen(
 ) {
     val context = LocalContext.current
     val audioPlayer = remember { AudioPlayer(context) }
+    val playbackPrefs = remember { PlaybackPreferences(context) }
 
-    // State - simplified to just track current page index
+    // Use bundleId from meta.json, fallback to path hash for old bundles
+    val bookId = remember { bundle.meta.bundleId ?: bundle.basePath.hashCode().toString() }
+
+    // State
     var currentPageIndex by remember { mutableIntStateOf(initialPageIndex) }
     var activeSpan by remember { mutableStateOf<SpanEntry?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var positionMs by remember { mutableLongStateOf(0L) }
     var debugMode by remember { mutableStateOf(false) }
-    var currentAudioSrc by remember { mutableStateOf<String?>(null) }
 
     val currentPage = bundle.getPage(currentPageIndex)
     val totalPages = bundle.pages.size
 
-    // Load audio for first span on startup
+    // Load audio and restore saved position on startup
     LaunchedEffect(Unit) {
-        bundle.spans.firstOrNull()?.let { span ->
-            currentAudioSrc = span.audioSrc
-            audioPlayer.loadFile(bundle.getAudioPath(span))
+        audioPlayer.loadFile(bundle.audioPath)
+
+        // Restore saved position
+        val savedPosition = playbackPrefs.getPosition(bookId)
+        if (savedPosition > 0) {
+            audioPlayer.seekTo(savedPosition)
+            positionMs = savedPosition
+            // Find and set the active span for the restored position
+            bundle.findSpanAtTime(savedPosition.toDouble())?.let { span ->
+                activeSpan = span
+                currentPageIndex = span.pageIndex
+            }
         }
     }
 
-    // Position update loop
+    // Position update loop - simple polling
+    var saveCounter by remember { mutableIntStateOf(0) }
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
             positionMs = audioPlayer.getCurrentPositionMs()
 
-            // Find active span
-            val span = bundle.findSpanAtTime(positionMs.toDouble())
-            activeSpan = span
-
-            // Auto-advance page if needed
-            span?.let {
-                if (it.pageIndex != currentPageIndex) {
-                    currentPageIndex = it.pageIndex
-                }
-                // Switch audio file if needed
-                if (it.audioSrc != currentAudioSrc) {
-                    currentAudioSrc = it.audioSrc
-                    audioPlayer.loadFile(bundle.getAudioPath(it))
-                    audioPlayer.seekTo(it.clipBeginMs.toLong())
-                    audioPlayer.play()
+            // Only update activeSpan when position leaves current span's range
+            // This prevents race conditions when user taps (tap sets activeSpan,
+            // but position hasn't caught up yet - we don't want to overwrite)
+            val currentSpan = activeSpan
+            if (currentSpan == null ||
+                positionMs < currentSpan.clipBeginMs ||
+                positionMs >= currentSpan.clipEndMs) {
+                bundle.findSpanAtTime(positionMs.toDouble())?.let { span ->
+                    activeSpan = span
+                    if (span.pageIndex != currentPageIndex) {
+                        currentPageIndex = span.pageIndex
+                    }
                 }
             }
 
+            // Save position every ~5 seconds (100 iterations * 50ms)
+            saveCounter++
+            if (saveCounter >= 100) {
+                playbackPrefs.savePosition(bookId, positionMs)
+                saveCounter = 0
+            }
+
             delay(50)  // Update at ~20Hz
+        }
+    }
+
+    // Save position when leaving the screen
+    DisposableEffect(Unit) {
+        onDispose {
+            playbackPrefs.savePosition(bookId, audioPlayer.getCurrentPositionMs())
+            audioPlayer.release()
         }
     }
 
@@ -86,43 +111,56 @@ fun PlayerScreen(
         }
     }
 
-    // Cleanup
-    DisposableEffect(Unit) {
-        onDispose {
-            audioPlayer.release()
+    // Handle playback ending (reached end of audio)
+    LaunchedEffect(Unit) {
+        audioPlayer.playbackEnded.collect { ended ->
+            if (ended) {
+                // Go to last page and last span when playback completes
+                val lastPage = bundle.pages.lastOrNull()
+                if (lastPage != null) {
+                    currentPageIndex = lastPage.pageIndex
+                    bundle.spans.lastOrNull()?.let { lastSpan ->
+                        activeSpan = lastSpan
+                    }
+                }
+            }
         }
     }
 
-    // UI - e-ink optimized: white background
-    // Use Box with overlay so toolbar doesn't shrink content area
-    // The compiler reserves bottom margin (200px) for the toolbar
+    // UI
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.White)
     ) {
-        // Page display - e-ink optimized: instant color change on press, no ripple
-        val interactionSource = remember { MutableInteractionSource() }
-        val isPressed by interactionSource.collectIsPressedAsState()
-
+        // Page display
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(if (isPressed) Color(0xFFE0E0E0) else Color.White)
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null
-                ) { audioPlayer.togglePlayPause() }
+                .background(Color.White)
         ) {
             currentPage?.let { page ->
                 PageRenderer(
                     page = page,
                     activeSpanId = activeSpan?.id,
                     modifier = Modifier.fillMaxSize(),
-                    debugMode = debugMode
+                    debugMode = debugMode,
+                    onSpanTap = { spanId ->
+                        // Find the span and seek to its position
+                        bundle.spans.find { it.id == spanId }?.let { span ->
+                            activeSpan = span
+                            // Seek slightly past clipBegin to avoid boundary precision issues
+                            // (clipBeginMs is Double, but seekTo takes Long - truncation can land us
+                            // in the previous span's range at exact boundaries)
+                            audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
+                            audioPlayer.play()
+                        }
+                    },
+                    onBackgroundTap = {
+                        audioPlayer.togglePlayPause()
+                    }
                 )
             } ?: run {
-                // Loading state
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -132,7 +170,7 @@ fun PlayerScreen(
             }
         }
 
-        // Controls - overlaid at bottom (within the compiler's reserved margin area)
+        // Controls
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -149,15 +187,10 @@ fun PlayerScreen(
                 onPreviousPage = {
                     if (currentPageIndex > 0) {
                         currentPageIndex--
-                        // Seek to first span of the new page
                         bundle.getPage(currentPageIndex)?.firstSpanId?.let { spanId ->
                             bundle.spans.find { it.id == spanId }?.let { span ->
-                                // Load audio if different
-                                if (span.audioSrc != currentAudioSrc) {
-                                    currentAudioSrc = span.audioSrc
-                                    audioPlayer.loadFile(bundle.getAudioPath(span))
-                                }
-                                audioPlayer.seekTo(span.clipBeginMs.toLong())
+                                activeSpan = span
+                                audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
                             }
                         }
                     }
@@ -165,15 +198,10 @@ fun PlayerScreen(
                 onNextPage = {
                     if (currentPageIndex < totalPages - 1) {
                         currentPageIndex++
-                        // Seek to first span of the new page
                         bundle.getPage(currentPageIndex)?.firstSpanId?.let { spanId ->
                             bundle.spans.find { it.id == spanId }?.let { span ->
-                                // Load audio if different
-                                if (span.audioSrc != currentAudioSrc) {
-                                    currentAudioSrc = span.audioSrc
-                                    audioPlayer.loadFile(bundle.getAudioPath(span))
-                                }
-                                audioPlayer.seekTo(span.clipBeginMs.toLong())
+                                activeSpan = span
+                                audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
                             }
                         }
                     }
@@ -203,7 +231,6 @@ private fun PlayerControls(
         color = Color.White
     ) {
         Column {
-            // Divider line
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -218,34 +245,32 @@ private fun PlayerControls(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Previous page
                 EInkButton(onClick = onPreviousPage) {
                     Text("< Prev")
                 }
 
-                // Play/Pause
-                EInkButton(onClick = onPlayPause, filled = true) {
+                EInkButton(
+                    onClick = onPlayPause,
+                    filled = true,
+                    modifier = Modifier.width(90.dp)
+                ) {
                     Text(if (isPlaying) "Pause" else "Play")
                 }
 
-                // Page indicator
                 Text(
                     text = "${currentPageIndex + 1} / $totalPages",
                     color = Color.Black
                 )
 
-                // Position
                 Text(
                     text = formatTime(positionMs),
                     color = Color.Black
                 )
 
-                // Next page
                 EInkButton(onClick = onNextPage) {
                     Text("Next >")
                 }
 
-                // Debug toggle
                 EInkButton(onClick = onDebugToggle, filled = debugMode) {
                     Text("Debug")
                 }
@@ -254,18 +279,12 @@ private fun PlayerControls(
     }
 }
 
-/**
- * Format milliseconds as MM:SS
- */
 private fun formatTime(ms: Long): String {
     val seconds = (ms / 1000) % 60
     val minutes = (ms / 1000) / 60
     return "%d:%02d".format(minutes, seconds)
 }
 
-/**
- * E-ink optimized button - instant color change on press, no ripple/animation
- */
 @Composable
 private fun EInkButton(
     onClick: () -> Unit,

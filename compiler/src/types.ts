@@ -112,6 +112,7 @@ export interface SpineItem {
  */
 export interface OPFPackage {
   title: string;
+  identifier?: string; // dc:identifier (often ISBN)
   manifest: Map<string, ManifestItem>;
   spine: SpineItem[];
   mediaOverlays: Map<string, string>; // spine item id -> SMIL href
@@ -133,6 +134,7 @@ export interface Chapter {
  */
 export interface BundleMeta {
   bundleVersion: string;
+  bundleId: string; // Stable identifier for this book (from dc:identifier or hash)
   profile: string;
   title: string;
   pages: number;
@@ -149,10 +151,10 @@ export interface TocEntry {
 
 /**
  * Span entry for JSONL output (includes pageIndex for lookup)
+ * Note: clipBeginMs/clipEndMs are global timestamps in the single audio.opus file
  */
 export interface SpanEntry {
   id: string;
-  audioSrc: string;
   clipBeginMs: number;
   clipEndMs: number;
   pageIndex: number;  // Global page index

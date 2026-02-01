@@ -12,7 +12,7 @@ export async function parseOPF(container: EPUBContainer): Promise<OPFPackage> {
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: '@_',
-    isArray: (name) => ['item', 'itemref', 'dc:title', 'dc:creator'].includes(name),
+    isArray: (name) => ['item', 'itemref', 'dc:title', 'dc:creator', 'dc:identifier'].includes(name),
   });
 
   const parsed = parser.parse(xml);
@@ -29,6 +29,11 @@ export async function parseOPF(container: EPUBContainer): Promise<OPFPackage> {
   // Handle case where title is an object with text content
   const titleText = typeof title === 'object' ? title['#text'] || 'Untitled' : title;
 
+  // Extract identifier (often ISBN) from metadata
+  const identifierArray = metadata?.['dc:identifier'];
+  const identifier = Array.isArray(identifierArray) ? identifierArray[0] : identifierArray;
+  const identifierText = typeof identifier === 'object' ? identifier['#text'] : identifier;
+
   // Parse manifest
   const manifest = parseManifest(pkg.manifest, container.opfPath);
 
@@ -40,6 +45,7 @@ export async function parseOPF(container: EPUBContainer): Promise<OPFPackage> {
 
   return {
     title: titleText,
+    identifier: identifierText,
     manifest,
     spine,
     mediaOverlays,

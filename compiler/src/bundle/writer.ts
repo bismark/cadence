@@ -1,6 +1,6 @@
 import { createWriteStream, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { writeFile, mkdir } from 'node:fs/promises';
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import archiver from 'archiver';
 import type {
   BundleMeta,
@@ -10,6 +10,7 @@ import type {
   TocEntry,
   EPUBContainer,
 } from '../types.js';
+import { concatenateAudio, applyAudioOffsets } from '../audio/concat.js';
 
 /**
  * Write the compiled bundle to a ZIP file
@@ -34,8 +35,12 @@ export async function writeBundle(
     }
     mkdirSync(tempDir, { recursive: true });
 
-    // Build audio path map to handle filename collisions
-    const audioPathMap = buildAudioPathMap(audioFiles);
+    // Concatenate audio files into single OGG Opus file
+    const audioOutputPath = join(tempDir, 'audio.opus');
+    const concatResult = await concatenateAudio(audioFiles, container, audioOutputPath);
+
+    // Apply audio offsets to spans (modifies in place)
+    applyAudioOffsets(spans, concatResult.offsets);
 
     // Write meta.json
     await writeMetaJson(tempDir, meta);
@@ -43,14 +48,11 @@ export async function writeBundle(
     // Write toc.json
     await writeTocJson(tempDir, toc);
 
-    // Write spans.jsonl
-    await writeSpansJsonl(tempDir, spans, spanToPageIndex, audioPathMap);
+    // Write spans.jsonl (with updated timestamps)
+    await writeSpansJsonl(tempDir, spans, spanToPageIndex);
 
     // Write pages
     await writePages(tempDir, pages);
-
-    // Copy audio files
-    await copyAudioFiles(tempDir, audioFiles, container, audioPathMap);
 
     // Create ZIP archive
     await createZipArchive(tempDir, outputPath);
@@ -73,29 +75,6 @@ async function writeMetaJson(dir: string, meta: BundleMeta): Promise<void> {
 }
 
 /**
- * Build a mapping from original audio paths to deduplicated output filenames.
- * Handles collisions by appending _1, _2, etc.
- */
-function buildAudioPathMap(audioFiles: string[]): Map<string, string> {
-  const pathMap = new Map<string, string>();
-  const usedNames = new Map<string, number>();
-
-  for (const audioPath of audioFiles) {
-    const base = basename(audioPath);
-    const ext = base.includes('.') ? base.substring(base.lastIndexOf('.')) : '';
-    const name = base.includes('.') ? base.substring(0, base.lastIndexOf('.')) : base;
-
-    const count = usedNames.get(base) || 0;
-    usedNames.set(base, count + 1);
-
-    const outputName = count === 0 ? base : `${name}_${count}${ext}`;
-    pathMap.set(audioPath, outputName);
-  }
-
-  return pathMap;
-}
-
-/**
  * Write toc.json file
  */
 async function writeTocJson(dir: string, toc: TocEntry[]): Promise<void> {
@@ -105,21 +84,19 @@ async function writeTocJson(dir: string, toc: TocEntry[]): Promise<void> {
 
 /**
  * Write spans.jsonl file (one JSON object per line)
+ * Timestamps are global offsets into the single audio.opus file
  */
 async function writeSpansJsonl(
   dir: string,
   spans: Span[],
-  spanToPageIndex: Map<string, number>,
-  audioPathMap: Map<string, string>
+  spanToPageIndex: Map<string, number>
 ): Promise<void> {
   const spansPath = join(dir, 'spans.jsonl');
   const lines: string[] = [];
 
   for (const span of spans) {
-    const audioFilename = audioPathMap.get(span.audioSrc) || basename(span.audioSrc);
     const entry: SpanEntry = {
       id: span.id,
-      audioSrc: `audio/${audioFilename}`,
       clipBeginMs: span.clipBeginMs,
       clipEndMs: span.clipEndMs,
       pageIndex: spanToPageIndex.get(span.id) ?? -1,
@@ -140,30 +117,6 @@ async function writePages(dir: string, pages: Page[]): Promise<void> {
   for (const page of pages) {
     const pagePath = join(pagesDir, `${page.pageId}.json`);
     await writeFile(pagePath, JSON.stringify(page, null, 2));
-  }
-}
-
-/**
- * Copy audio files from EPUB to bundle
- */
-async function copyAudioFiles(
-  dir: string,
-  audioFiles: string[],
-  container: EPUBContainer,
-  audioPathMap: Map<string, string>
-): Promise<void> {
-  const audioDir = join(dir, 'audio');
-  await mkdir(audioDir, { recursive: true });
-
-  for (const audioPath of audioFiles) {
-    try {
-      const audioData = await container.readFile(audioPath);
-      const outputName = audioPathMap.get(audioPath) || basename(audioPath);
-      const destPath = join(audioDir, outputName);
-      await writeFile(destPath, audioData);
-    } catch (err) {
-      console.warn(`Warning: Could not copy audio file ${audioPath}: ${err}`);
-    }
   }
 }
 
@@ -218,8 +171,12 @@ export async function writeBundleUncompressed(
   }
   mkdirSync(outputDir, { recursive: true });
 
-  // Build audio path map to handle filename collisions
-  const audioPathMap = buildAudioPathMap(audioFiles);
+  // Concatenate audio files into single OGG Opus file
+  const audioOutputPath = join(outputDir, 'audio.opus');
+  const concatResult = await concatenateAudio(audioFiles, container, audioOutputPath);
+
+  // Apply audio offsets to spans (modifies in place)
+  applyAudioOffsets(spans, concatResult.offsets);
 
   // Write meta.json
   await writeMetaJson(outputDir, meta);
@@ -227,14 +184,11 @@ export async function writeBundleUncompressed(
   // Write toc.json
   await writeTocJson(outputDir, toc);
 
-  // Write spans.jsonl
-  await writeSpansJsonl(outputDir, spans, spanToPageIndex, audioPathMap);
+  // Write spans.jsonl (with updated timestamps)
+  await writeSpansJsonl(outputDir, spans, spanToPageIndex);
 
   // Write pages
   await writePages(outputDir, pages);
-
-  // Copy audio files
-  await copyAudioFiles(outputDir, audioFiles, container, audioPathMap);
 
   console.log(`Bundle written to: ${outputDir}`);
 }

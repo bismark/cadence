@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Typeface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -15,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import com.cadence.player.data.Page
 import com.cadence.player.data.TextRun
@@ -46,13 +48,17 @@ private class NotoSerifFonts(context: Context) {
  * We apply margins as pixel offsets to avoid dp conversion issues.
  *
  * @param debugMode When true, renders bounding boxes and baselines for debugging
+ * @param onSpanTap Called when user taps on a span, with the span ID
+ * @param onBackgroundTap Called when user taps outside any span
  */
 @Composable
 fun PageRenderer(
     page: Page,
     activeSpanId: String?,
     modifier: Modifier = Modifier,
-    debugMode: Boolean = false
+    debugMode: Boolean = false,
+    onSpanTap: (String) -> Unit = {},
+    onBackgroundTap: () -> Unit = {}
 ) {
     // Device margins in pixels (matching Supernote Manta profile)
     // These are added as offsets to drawing coordinates, not as Compose padding
@@ -67,6 +73,27 @@ fun PageRenderer(
         modifier = modifier
             .fillMaxSize()
             .background(Color.White)
+            .pointerInput(page) {
+                detectTapGestures { offset ->
+                    // Convert tap position to content coordinates (subtract margins)
+                    val contentX = offset.x - marginLeft
+                    val contentY = offset.y - marginTop
+                    
+                    // Find if tap is within any span rectangle
+                    val tappedSpanId = page.spanRects.find { spanRect ->
+                        spanRect.rects.any { rect ->
+                            contentX >= rect.x && contentX <= rect.x + rect.width &&
+                            contentY >= rect.y && contentY <= rect.y + rect.height
+                        }
+                    }?.spanId
+                    
+                    if (tappedSpanId != null) {
+                        onSpanTap(tappedSpanId)
+                    } else {
+                        onBackgroundTap()
+                    }
+                }
+            }
     ) {
         Canvas(
             modifier = Modifier.fillMaxSize()

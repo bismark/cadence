@@ -26,15 +26,27 @@ class AudioPlayer(context: Context) {
     private val _durationMs = MutableStateFlow(0L)
     val durationMs: StateFlow<Long> = _durationMs.asStateFlow()
 
+    private val _playbackEnded = MutableStateFlow(false)
+    val playbackEnded: StateFlow<Boolean> = _playbackEnded.asStateFlow()
+
     init {
         exoPlayer.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _isPlaying.value = isPlaying
+                // Use playWhenReady instead of isPlaying to avoid brief false blips during seeks.
+                // isPlaying can be momentarily false during seek/buffer even when user intends to play.
+                _isPlaying.value = exoPlayer.playWhenReady
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY) {
-                    _durationMs.value = exoPlayer.duration
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        _durationMs.value = exoPlayer.duration
+                        _playbackEnded.value = false
+                    }
+                    Player.STATE_ENDED -> {
+                        _playbackEnded.value = true
+                        _isPlaying.value = false  // Actually stopped at end
+                    }
                 }
             }
         })
@@ -70,7 +82,7 @@ class AudioPlayer(context: Context) {
      * Toggle play/pause
      */
     fun togglePlayPause() {
-        if (exoPlayer.isPlaying) {
+        if (exoPlayer.playWhenReady) {
             pause()
         } else {
             play()

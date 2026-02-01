@@ -187,7 +187,10 @@ export async function paginateContent(
             const spanId = el.getAttribute('data-span-id');
             if (!spanId) continue;
 
-            const clientRects = el.getClientRects();
+            // Use Range to get tight text rects (not block element width)
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            const clientRects = range.getClientRects();
             const rects: Array<{ x: number; y: number; width: number; height: number }> = [];
 
             for (let i = 0; i < clientRects.length; i++) {
@@ -325,8 +328,10 @@ async function extractSpanRects(
         const spanId = el.getAttribute('data-span-id');
         if (!spanId) continue;
 
-        // Get all client rects (handles wrapped text)
-        const clientRects = el.getClientRects();
+        // Use Range to get tight text rects (not block element width)
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const clientRects = range.getClientRects();
         const rects: Array<{ x: number; y: number; width: number; height: number }> = [];
 
         for (let i = 0; i < clientRects.length; i++) {

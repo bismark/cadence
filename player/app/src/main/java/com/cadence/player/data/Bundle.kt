@@ -8,6 +8,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class BundleMeta(
     val bundleVersion: String,
+    val bundleId: String? = null,  // Stable identifier (from dc:identifier or hash)
     val profile: String,
     val title: String,
     val pages: Int,
@@ -16,11 +17,11 @@ data class BundleMeta(
 
 /**
  * A span entry from spans.jsonl
+ * Note: clipBeginMs/clipEndMs are global timestamps in the single audio.opus file
  */
 @Serializable
 data class SpanEntry(
     val id: String,
-    val audioSrc: String,
     val clipBeginMs: Double,
     val clipEndMs: Double,
     val pageIndex: Int
@@ -105,10 +106,16 @@ data class CadenceBundle(
     val spans: List<SpanEntry>,
     val pages: List<Page>,  // Ordered by pageIndex
     val toc: List<TocEntry>,
-    val basePath: String  // Path to bundle directory for audio files
+    val basePath: String  // Path to bundle directory
 ) {
     /**
-     * Find the span active at a given timestamp
+     * Path to the single audio file
+     */
+    val audioPath: String get() = "$basePath/audio.opus"
+
+    /**
+     * Find the span active at a given timestamp.
+     * Timestamps are global offsets into the single audio.opus file.
      */
     fun findSpanAtTime(timestampMs: Double): SpanEntry? {
         return spans.find { span ->
@@ -121,11 +128,4 @@ data class CadenceBundle(
      * Get page by index
      */
     fun getPage(index: Int): Page? = pages.getOrNull(index)
-
-    /**
-     * Get audio file path for a span
-     */
-    fun getAudioPath(span: SpanEntry): String {
-        return "$basePath/audio/${span.audioSrc.substringAfterLast('/')}"
-    }
 }
