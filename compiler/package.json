@@ -10,7 +10,10 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "compile": "tsx src/index.ts compile"
+    "compile": "tsx src/index.ts compile",
+    "lint": "biome check src",
+    "lint:fix": "biome check --write src",
+    "format": "biome format --write src"
   },
   "dependencies": {
     "archiver": "^7.0.0",
@@ -18,9 +21,12 @@
     "fast-xml-parser": "^4.5.0",
     "parse5": "^7.2.1",
     "playwright": "^1.49.0",
+    "wink-eng-lite-web-model": "^1.6.0",
+    "wink-nlp": "^2.3.0",
     "yauzl": "^3.2.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.3.13",
     "@types/archiver": "^6.0.0",
     "@types/node": "^22.10.0",
     "@types/yauzl": "^2.10.3",
