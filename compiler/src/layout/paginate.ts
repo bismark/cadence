@@ -121,9 +121,11 @@ export async function paginateContent(
         height: ${columnHeight}px;
         overflow: visible;
       }
-      /* Prevent breaks inside paragraphs and spans */
-      p, [data-span-id] {
+      /* Prevent breaks inside spans; allow paragraph breaks */
+      [data-span-id] {
         break-inside: avoid;
+      }
+      p {
         orphans: 2;
         widows: 2;
       }
