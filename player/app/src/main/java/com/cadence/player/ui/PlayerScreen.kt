@@ -129,15 +129,28 @@ fun PlayerScreen(
 
     fun SpanEntry.hasValidTiming(): Boolean = clipBeginMs >= 0 && clipEndMs > clipBeginMs
 
-    fun seekToSpan(span: SpanEntry, play: Boolean) {
+    fun seekToSpan(span: SpanEntry, play: Boolean, overridePageIndex: Int? = null) {
         activeSpan = span
-        if (span.pageIndex != currentPageIndex) {
+        if (overridePageIndex != null) {
+            currentPageIndex = overridePageIndex
+        } else if (span.pageIndex != currentPageIndex) {
             currentPageIndex = span.pageIndex
         }
         audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
         if (play) {
             audioPlayer.play()
         }
+    }
+
+    fun findFirstTimedSpanOnPage(pageIndex: Int): SpanEntry? {
+        val page = bundle.getPage(pageIndex) ?: return null
+        for (spanRect in page.spanRects) {
+            val span = bundle.getSpanById(spanRect.spanId) ?: continue
+            if (span.hasValidTiming() && span.pageIndex == pageIndex) {
+                return span
+            }
+        }
+        return null
     }
 
     fun handlePlayPause() {
@@ -212,22 +225,18 @@ fun PlayerScreen(
                 onPreviousPage = {
                     if (currentPageIndex > 0) {
                         currentPageIndex--
-                        bundle.getPage(currentPageIndex)?.firstSpanId?.let { spanId ->
-                            bundle.getSpanById(spanId)?.let { span ->
-                                if (!span.hasValidTiming()) return@let
-                                seekToSpan(span, play = false)
-                            }
+                        val targetIndex = currentPageIndex
+                        findFirstTimedSpanOnPage(targetIndex)?.let { span ->
+                            seekToSpan(span, play = false, overridePageIndex = targetIndex)
                         }
                     }
                 },
                 onNextPage = {
                     if (currentPageIndex < totalPages - 1) {
                         currentPageIndex++
-                        bundle.getPage(currentPageIndex)?.firstSpanId?.let { spanId ->
-                            bundle.getSpanById(spanId)?.let { span ->
-                                if (!span.hasValidTiming()) return@let
-                                seekToSpan(span, play = false)
-                            }
+                        val targetIndex = currentPageIndex
+                        findFirstTimedSpanOnPage(targetIndex)?.let { span ->
+                            seekToSpan(span, play = false, overridePageIndex = targetIndex)
                         }
                     }
                 }
