@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { writeFile, unlink, mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { EPUBContainer } from '../types.js';
 
 /**
@@ -32,9 +32,12 @@ export interface ConcatResult {
 async function getAudioDuration(filePath: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const ffprobe = spawn('ffprobe', [
-      '-v', 'error',
-      '-show_entries', 'format=duration',
-      '-of', 'default=noprint_wrappers=1:nokey=1',
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
       filePath,
     ]);
 
@@ -55,7 +58,7 @@ async function getAudioDuration(filePath: string): Promise<number> {
         return;
       }
       const seconds = parseFloat(stdout.trim());
-      if (isNaN(seconds)) {
+      if (Number.isNaN(seconds)) {
         reject(new Error(`Could not parse duration from ffprobe output: ${stdout}`));
         return;
       }
@@ -67,22 +70,26 @@ async function getAudioDuration(filePath: string): Promise<number> {
 /**
  * Run FFmpeg to concatenate and transcode audio files
  */
-async function runFFmpeg(
-  concatFilePath: string,
-  outputPath: string
-): Promise<void> {
+async function runFFmpeg(concatFilePath: string, outputPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     // Use OGG Opus with good quality settings for audiobooks
     // -b:a 48k is good for voice, -vbr on enables variable bitrate
     const ffmpeg = spawn('ffmpeg', [
-      '-y',                        // Overwrite output
-      '-f', 'concat',              // Use concat demuxer
-      '-safe', '0',                // Allow absolute paths
-      '-i', concatFilePath,        // Input concat file
-      '-c:a', 'libopus',           // Opus codec
-      '-b:a', '48k',               // 48kbps bitrate (good for speech)
-      '-vbr', 'on',                // Variable bitrate
-      '-application', 'voip',      // Optimize for speech
+      '-y', // Overwrite output
+      '-f',
+      'concat', // Use concat demuxer
+      '-safe',
+      '0', // Allow absolute paths
+      '-i',
+      concatFilePath, // Input concat file
+      '-c:a',
+      'libopus', // Opus codec
+      '-b:a',
+      '48k', // 48kbps bitrate (good for speech)
+      '-vbr',
+      'on', // Variable bitrate
+      '-application',
+      'voip', // Optimize for speech
       outputPath,
     ]);
 
@@ -104,7 +111,7 @@ async function runFFmpeg(
 
 /**
  * Concatenate audio files from an EPUB into a single OGG Opus file.
- * 
+ *
  * @param audioFiles - List of audio file paths (relative to EPUB root)
  * @param container - EPUB container for reading files
  * @param outputPath - Path where the concatenated file should be written
@@ -113,7 +120,7 @@ async function runFFmpeg(
 export async function concatenateAudio(
   audioFiles: string[],
   container: EPUBContainer,
-  outputPath: string
+  outputPath: string,
 ): Promise<ConcatResult> {
   if (audioFiles.length === 0) {
     return {
@@ -125,7 +132,7 @@ export async function concatenateAudio(
 
   // Create a temporary directory for extracted audio files
   const tempDir = await mkdtemp(join(tmpdir(), 'cadence-audio-'));
-  
+
   try {
     const offsets = new Map<string, AudioOffset>();
     const tempFiles: string[] = [];
@@ -157,9 +164,7 @@ export async function concatenateAudio(
     console.log(`  Concatenating to OGG Opus...`);
 
     // Create FFmpeg concat file
-    const concatFileContent = tempFiles
-      .map((f) => `file '${f.replace(/'/g, "'\\''")}'`)
-      .join('\n');
+    const concatFileContent = tempFiles.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join('\n');
     const concatFilePath = join(tempDir, 'concat.txt');
     await writeFile(concatFilePath, concatFileContent);
 
@@ -183,11 +188,13 @@ export async function concatenateAudio(
  * Update span timestamps based on audio offset mapping.
  * Modifies spans in place.
  */
-export function applyAudioOffsets<T extends { audioSrc: string; clipBeginMs: number; clipEndMs: number }>(
-  spans: T[],
-  offsets: Map<string, AudioOffset>
-): void {
+export function applyAudioOffsets<
+  T extends { audioSrc: string; clipBeginMs: number; clipEndMs: number },
+>(spans: T[], offsets: Map<string, AudioOffset>): void {
   for (const span of spans) {
+    if (span.clipBeginMs < 0 || span.clipEndMs < 0) {
+      continue;
+    }
     const offset = offsets.get(span.audioSrc);
     if (offset) {
       span.clipBeginMs += offset.startMs;
@@ -195,5 +202,74 @@ export function applyAudioOffsets<T extends { audioSrc: string; clipBeginMs: num
     } else {
       console.warn(`Warning: No offset found for audio file: ${span.audioSrc}`);
     }
+  }
+}
+
+/**
+ * Concatenate audio files from disk into a single OGG Opus file.
+ * Unlike concatenateAudio, this works with direct file paths rather than an EPUBContainer.
+ *
+ * @param audioFiles - List of absolute paths to audio files
+ * @param outputPath - Path where the concatenated file should be written
+ * @returns Offset mapping and total duration
+ */
+export async function concatenateAudioFiles(
+  audioFiles: string[],
+  outputPath: string,
+): Promise<ConcatResult> {
+  if (audioFiles.length === 0) {
+    return {
+      outputPath,
+      offsets: new Map(),
+      totalDurationMs: 0,
+    };
+  }
+
+  // Create a temporary directory for the concat file
+  const tempDir = await mkdtemp(join(tmpdir(), 'cadence-audio-'));
+
+  try {
+    const offsets = new Map<string, AudioOffset>();
+    let currentOffsetMs = 0;
+
+    console.log(`  Processing ${audioFiles.length} audio files...`);
+
+    // Get duration for each audio file
+    for (const audioPath of audioFiles) {
+      const durationMs = await getAudioDuration(audioPath);
+
+      offsets.set(audioPath, {
+        originalPath: audioPath,
+        startMs: currentOffsetMs,
+        endMs: currentOffsetMs + durationMs,
+        durationMs,
+      });
+
+      currentOffsetMs += durationMs;
+    }
+
+    console.log(`  Total audio duration: ${(currentOffsetMs / 1000 / 60).toFixed(1)} minutes`);
+    console.log(`  Concatenating to OGG Opus...`);
+
+    // Create FFmpeg concat file
+    const concatFileContent = audioFiles
+      .map((f) => `file '${f.replace(/'/g, "'\\''")}'`)
+      .join('\n');
+    const concatFilePath = join(tempDir, 'concat.txt');
+    await writeFile(concatFilePath, concatFileContent);
+
+    // Run FFmpeg
+    await runFFmpeg(concatFilePath, outputPath);
+
+    console.log(`  Audio concatenation complete`);
+
+    return {
+      outputPath,
+      offsets,
+      totalDurationMs: currentOffsetMs,
+    };
+  } finally {
+    // Clean up temp directory
+    await rm(tempDir, { recursive: true, force: true });
   }
 }

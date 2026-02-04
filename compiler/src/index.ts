@@ -1,23 +1,37 @@
 #!/usr/bin/env node
 
-import { Command } from 'commander';
-import { resolve, basename } from 'node:path';
 import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
+import { Command } from 'commander';
+import {
+  expandEmptySentenceRanges,
+  extractSentences,
+  findNearestMatch,
+  getSentenceRanges,
+  interpolateSentenceRanges,
+  prepareAudioTracks,
+  type SentenceRange,
+  type Transcription,
+  tagSentencesInXhtml,
+  transcribeMultiple,
+} from './align/index.js';
+import { writeBundle, writeBundleUncompressed } from './bundle/writer.js';
+import { getProfile, profiles } from './device-profiles/profiles.js';
 import { openEPUB } from './epub/container.js';
-import { parseOPF, getSpineXHTMLFiles, getAudioFiles } from './epub/opf.js';
+import { getAudioFiles, getSpineXHTMLFiles, parseOPF } from './epub/opf.js';
 import { parseChapterSMIL } from './epub/smil.js';
 import { normalizeXHTML } from './epub/xhtml.js';
 import {
-  initBrowser,
-  closeBrowser,
-  paginateChapters,
   assignSpansToPages,
+  closeBrowser,
+  initBrowser,
+  paginateChapters,
 } from './layout/paginate.js';
-import { writeBundle, writeBundleUncompressed } from './bundle/writer.js';
-import { getProfile, profiles } from './device-profiles/profiles.js';
-import { validateCompilationResult, logValidationResult } from './validation.js';
-import { previewAtTimestamp } from './preview.js';
-import type { Span, NormalizedContent, BundleMeta, TocEntry, DeviceProfile } from './types.js';
+import { loadBundle, previewAtTimestamp } from './preview.js';
+import type { BundleMeta, DeviceProfile, NormalizedContent, Span, TocEntry } from './types.js';
+import { logValidationResult, validateCompilationResult } from './validation.js';
 
 const program = new Command();
 
@@ -69,7 +83,687 @@ program
     }
   });
 
+program
+  .command('inspect')
+  .description('Inspect a Cadence bundle and print alignment stats')
+  .requiredOption('-b, --bundle <path>', 'Input bundle directory path')
+  .action(async (options) => {
+    try {
+      const bundlePath = resolve(options.bundle);
+      await inspectBundle(bundlePath);
+    } catch (err) {
+      console.error('Inspection failed:', err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('align')
+  .description('Align an EPUB with an audiobook using speech-to-text (requires parakeet-mlx)')
+  .requiredOption('-e, --epub <path>', 'Input EPUB file path')
+  .requiredOption('-a, --audio <path>', 'Input audiobook file or directory')
+  .option('-o, --output <path>', 'Output bundle path (default: <epub>.bundle.zip)')
+  .option('-p, --profile <name>', `Device profile (${Object.keys(profiles).join(', ')})`)
+  .option('--no-zip', 'Output uncompressed bundle directory instead of ZIP')
+  .option('--keep-temp', 'Keep temporary files (for debugging)')
+  .option('--transcription <path>', 'Use existing transcription JSON (skip parakeet-mlx)')
+  .action(async (options) => {
+    try {
+      const profile = getProfile(options.profile);
+      await alignEPUB(
+        options.epub,
+        options.audio,
+        options.output,
+        options.zip,
+        options.keepTemp ?? false,
+        profile,
+        options.transcription,
+      );
+    } catch (err) {
+      console.error('Alignment failed:', err);
+      process.exit(1);
+    }
+  });
+
 program.parse();
+
+const OFFSET_SEARCH_WINDOW_SIZE = 5000;
+
+async function loadTranscriptionFromFile(
+  transcriptionPath: string,
+  trackPaths: string[],
+): Promise<Transcription> {
+  const { readFile } = await import('node:fs/promises');
+  const raw = JSON.parse(await readFile(resolve(transcriptionPath), 'utf-8'));
+
+  const defaultAudiofile = trackPaths[0] ?? '';
+
+  return {
+    transcript: raw.transcript,
+    wordTimeline: raw.wordTimeline.map((entry: any) => ({
+      text: entry.text,
+      startTime: entry.startTime,
+      endTime: entry.endTime,
+      startOffsetUtf16: entry.startOffsetUtf16,
+      endOffsetUtf16: entry.endOffsetUtf16,
+      audiofile: entry.audiofile ?? defaultAudiofile,
+    })),
+  };
+}
+
+async function inspectBundle(bundlePath: string): Promise<void> {
+  const bundle = await loadBundle(bundlePath);
+  const { meta, spans, pages } = bundle;
+
+  const timedSpans = spans.filter(
+    (span) => span.clipBeginMs >= 0 && span.clipEndMs > span.clipBeginMs,
+  );
+  const untimedSpans = spans.length - timedSpans.length;
+
+  const durations = timedSpans.map((span) => span.clipEndMs - span.clipBeginMs);
+  const durationTotal = durations.reduce((sum, value) => sum + value, 0);
+  const durationMin = durations.length ? Math.min(...durations) : 0;
+  const durationMax = durations.length ? Math.max(...durations) : 0;
+  const durationAvg = durations.length ? durationTotal / durations.length : 0;
+
+  const sortedTimed = [...timedSpans].sort((a, b) => a.clipBeginMs - b.clipBeginMs);
+  const firstTimed = sortedTimed[0];
+  const lastTimed = sortedTimed[sortedTimed.length - 1];
+
+  const gaps: { gapMs: number; fromId: string; toId: string }[] = [];
+  for (let i = 1; i < sortedTimed.length; i++) {
+    const prev = sortedTimed[i - 1]!;
+    const next = sortedTimed[i]!;
+    const gapMs = next.clipBeginMs - prev.clipEndMs;
+    if (gapMs > 0) {
+      gaps.push({ gapMs, fromId: prev.id, toId: next.id });
+    }
+  }
+
+  const totalGapMs = gaps.reduce((sum, gap) => sum + gap.gapMs, 0);
+  const maxGap = gaps.reduce((best, gap) => (gap.gapMs > best.gapMs ? gap : best), {
+    gapMs: 0,
+    fromId: '',
+    toId: '',
+  });
+
+  const pageStats = new Map<number, { timed: number; untimed: number }>();
+  for (const span of spans) {
+    const entry = pageStats.get(span.pageIndex) ?? { timed: 0, untimed: 0 };
+    if (span.clipBeginMs >= 0 && span.clipEndMs > span.clipBeginMs) {
+      entry.timed += 1;
+    } else {
+      entry.untimed += 1;
+    }
+    pageStats.set(span.pageIndex, entry);
+  }
+
+  const pagesWithNoTimed = pages.filter(
+    (page) => (pageStats.get(page.pageIndex)?.timed ?? 0) === 0,
+  );
+  const pagesWithNoSpans = pages.filter((page) => !pageStats.has(page.pageIndex));
+  const topUntimedPages = [...pageStats.entries()]
+    .filter(([pageIndex]) => pageIndex >= 0)
+    .sort((a, b) => b[1].untimed - a[1].untimed)
+    .slice(0, 5);
+
+  const formatMs = (ms: number) => {
+    if (!Number.isFinite(ms)) return 'n/a';
+    const totalSeconds = Math.floor(ms / 1000);
+    const seconds = totalSeconds % 60;
+    const minutes = Math.floor(totalSeconds / 60) % 60;
+    const hours = Math.floor(totalSeconds / 3600);
+    return hours > 0
+      ? `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+      : `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  console.log('Bundle inspection');
+  console.log('=================');
+  console.log(`Path: ${bundlePath}`);
+  console.log(`Title: ${meta.title}`);
+  console.log(`Profile: ${meta.profile}`);
+  console.log(`Pages: ${pages.length}`);
+  console.log(`Spans: ${spans.length}`);
+  console.log(`Timed spans: ${timedSpans.length}`);
+  console.log(`Untimed spans: ${untimedSpans}`);
+
+  if (timedSpans.length > 0) {
+    console.log('');
+    console.log('Timing stats');
+    console.log('------------');
+    console.log(`First timed span: ${firstTimed?.id} @ ${formatMs(firstTimed?.clipBeginMs ?? 0)}`);
+    console.log(`Last timed span: ${lastTimed?.id} @ ${formatMs(lastTimed?.clipEndMs ?? 0)}`);
+    console.log(
+      `Span duration min/avg/max: ${durationMin.toFixed(0)} / ${durationAvg.toFixed(0)} / ${durationMax.toFixed(0)} ms`,
+    );
+    console.log(`Total gap time: ${formatMs(totalGapMs)} (${gaps.length} gaps)`);
+    if (maxGap.gapMs > 0) {
+      console.log(
+        `Largest gap: ${formatMs(maxGap.gapMs)} between ${maxGap.fromId} -> ${maxGap.toId}`,
+      );
+    }
+  }
+
+  console.log('');
+  console.log('Page stats');
+  console.log('----------');
+  console.log(`Pages with no timed spans: ${pagesWithNoTimed.length}`);
+  console.log(`Pages with no spans: ${pagesWithNoSpans.length}`);
+
+  if (topUntimedPages.length > 0) {
+    console.log('Top pages by untimed spans:');
+    for (const [pageIndex, stats] of topUntimedPages) {
+      console.log(`  Page ${pageIndex}: ${stats.untimed} untimed, ${stats.timed} timed`);
+    }
+  }
+}
+
+/**
+ * Find the best offset in the transcription for a chapter's text.
+ */
+function findChapterOffset(
+  chapterSentences: string[],
+  transcription: Transcription,
+  lastOffset: number,
+): { startSentence: number; transcriptionOffset: number | null } {
+  const transcriptionText = transcription.transcript;
+
+  let i = 0;
+  while (i < transcriptionText.length) {
+    let startSentence = 0;
+
+    const proposedStartIndex = (lastOffset + i) % transcriptionText.length;
+    const proposedEndIndex =
+      (proposedStartIndex + OFFSET_SEARCH_WINDOW_SIZE) % transcriptionText.length;
+
+    const wrapping = proposedEndIndex < proposedStartIndex;
+    const endIndex = wrapping ? transcriptionText.length : proposedEndIndex;
+    const startIndex = proposedStartIndex;
+
+    if (startIndex < endIndex) {
+      const transcriptionTextSlice = transcriptionText.slice(startIndex, endIndex);
+
+      // Normalize transcription slice once per window to avoid repeated work
+      const normalizeText = (s: string) =>
+        s
+          .toLowerCase()
+          .replace(/[\r\n\t]+/g, ' ') // Collapse newlines/tabs to space
+          .replace(/\s+/g, ' ') // Collapse multiple spaces
+          .replace(/[—–]/g, '-') // Normalize dashes
+          .replace(/['']/g, "'") // Normalize quotes
+          .replace(/[""]/g, '"')
+          .trim();
+
+      const normalizedTranscriptionSlice = normalizeText(transcriptionTextSlice);
+
+      while (startSentence < chapterSentences.length) {
+        const queryString = chapterSentences.slice(startSentence, startSentence + 6).join(' ');
+        const normalizedQuery = normalizeText(queryString);
+
+        const firstMatch = findNearestMatch(
+          normalizedQuery,
+          normalizedTranscriptionSlice,
+          Math.max(Math.floor(0.15 * normalizedQuery.length), 2), // Slightly more tolerant
+        );
+
+        if (firstMatch) {
+          return {
+            startSentence,
+            transcriptionOffset: (firstMatch.index + startIndex) % transcriptionText.length,
+          };
+        }
+
+        startSentence += 3;
+      }
+    }
+
+    if (wrapping) {
+      i += transcriptionText.length - proposedStartIndex;
+    } else {
+      i += Math.floor(OFFSET_SEARCH_WINDOW_SIZE / 2);
+    }
+  }
+
+  return { startSentence: 0, transcriptionOffset: null };
+}
+
+/**
+ * Align EPUB with audiobook using parakeet-mlx
+ */
+async function alignEPUB(
+  epubPath: string,
+  audioPath: string,
+  outputPath: string | undefined,
+  createZip: boolean,
+  keepTemp: boolean,
+  profile: DeviceProfile,
+  transcriptionPath?: string,
+): Promise<void> {
+  const resolvedEpub = resolve(epubPath);
+  const resolvedAudio = resolve(audioPath);
+  const defaultOutput = resolvedEpub.replace(/\.epub$/i, '.bundle.zip');
+  const resolvedOutput = outputPath ? resolve(outputPath) : defaultOutput;
+
+  console.log('Cadence Alignment v0.1.0');
+  console.log('========================');
+  console.log(`EPUB:   ${resolvedEpub}`);
+  console.log(`Audio:  ${resolvedAudio}`);
+  console.log(`Output: ${resolvedOutput}`);
+  console.log(`Profile: ${profile.name}`);
+  console.log('');
+
+  // Create temp directory for extracted chapters
+  const tempDir = await mkdtemp(join(tmpdir(), 'cadence-align-'));
+  console.log(`Temp directory: ${tempDir}`);
+
+  try {
+    // Step 1: Prepare audio tracks
+    console.log('');
+    console.log('Step 1: Preparing audio tracks...');
+    const tracks = await prepareAudioTracks(resolvedAudio, tempDir);
+    console.log(`  Found ${tracks.length} audio track(s)`);
+    for (const track of tracks) {
+      console.log(`    - ${basename(track.path)} (${(track.duration / 60).toFixed(1)} min)`);
+    }
+
+    // Step 2: Transcribe audio
+    console.log('');
+    console.log('Step 2: Transcribing audio with parakeet-mlx...');
+    console.log('  (This may take a while for long audiobooks)');
+
+    const trackPaths = tracks.map((t) => t.path);
+
+    const transcription = transcriptionPath
+      ? await loadTranscriptionFromFile(transcriptionPath, trackPaths)
+      : await transcribeMultiple(trackPaths);
+
+    console.log(`  Transcript length: ${transcription.transcript.length} chars`);
+    console.log(`  Word timeline entries: ${transcription.wordTimeline.length}`);
+
+    // Step 3: Open EPUB and parse
+    console.log('');
+    console.log('Step 3: Opening EPUB...');
+    const container = await openEPUB(resolvedEpub);
+
+    try {
+      const opf = await parseOPF(container);
+      console.log(`  Title: ${opf.title}`);
+
+      const spineFiles = getSpineXHTMLFiles(opf);
+      console.log(`  Spine items: ${spineFiles.length}`);
+
+      // Step 4: Process each chapter - extract sentences, align, tag
+      console.log('');
+      console.log('Step 4: Aligning chapters with audio...');
+
+      const allSpans: Span[] = [];
+      const normalizedContents: NormalizedContent[] = [];
+      let lastTranscriptionOffset = 0;
+      let lastSentenceRange: SentenceRange | null = null;
+      let _globalSpanIndex = 0;
+
+      for (let i = 0; i < spineFiles.length; i++) {
+        const chapter = spineFiles[i];
+        console.log(`  Processing: ${chapter.href}`);
+
+        // Read chapter XHTML
+        const xhtmlContent = await container.readFile(chapter.href);
+        const xhtml = xhtmlContent.toString('utf-8');
+
+        // Extract sentences
+        const sentences = extractSentences(xhtml);
+        console.log(`    Sentences: ${sentences.length}`);
+
+        if (sentences.length === 0) {
+          console.log(`    Skipping (no text)`);
+          continue;
+        }
+
+        // Find chapter offset in transcription
+        // Skip searching if we've consumed most of the transcription (single audio track)
+        const transcriptionRemaining = transcription.transcript.length - lastTranscriptionOffset;
+        const transcriptionConsumedPct =
+          (lastTranscriptionOffset / transcription.transcript.length) * 100;
+
+        let startSentence = 0;
+        let transcriptionOffset: number | null = null;
+
+        if (tracks.length === 1 && transcriptionConsumedPct > 80) {
+          // Skip expensive search - we've consumed most of the audio
+        } else {
+          const result = findChapterOffset(sentences, transcription, lastTranscriptionOffset);
+          startSentence = result.startSentence;
+          transcriptionOffset = result.transcriptionOffset;
+        }
+
+        if (transcriptionOffset === null) {
+          console.log(`    Could not find matching audio - skipping`);
+          continue;
+        }
+
+        console.log(`    Matched at offset ${transcriptionOffset}, sentence ${startSentence}`);
+
+        // Get sentence ranges (timing)
+        const { sentenceRanges, transcriptionOffset: endOffset } = await getSentenceRanges(
+          startSentence,
+          transcription,
+          sentences,
+          transcriptionOffset,
+          lastSentenceRange,
+        );
+
+        // Interpolate missing ranges
+        const interpolated = await interpolateSentenceRanges(sentenceRanges, lastSentenceRange);
+        const expanded = expandEmptySentenceRanges(interpolated);
+
+        console.log(`    Aligned ${expanded.length} sentence ranges`);
+
+        // Tag sentences in XHTML
+        const { html: taggedHtml } = tagSentencesInXhtml(xhtml, chapter.id);
+
+        // Create spans from sentence ranges
+        for (const range of expanded) {
+          const spanId = `${chapter.id}-sentence${range.id}`;
+          const clipBeginMs = range.start < 0 ? -1 : Math.round(range.start * 1000);
+          const clipEndMs = range.end < 0 ? -1 : Math.round(range.end * 1000);
+
+          allSpans.push({
+            id: spanId,
+            chapterId: chapter.id,
+            textRef: `${chapter.href}#${spanId}`,
+            audioSrc: range.audiofile,
+            clipBeginMs,
+            clipEndMs,
+          });
+          _globalSpanIndex++;
+        }
+
+        // Normalize for Chromium rendering
+        // We need to create a proper NormalizedContent with the tagged HTML
+        normalizedContents.push({
+          chapterId: chapter.id,
+          html: generateNormalizedAlignedHTML(taggedHtml, profile, chapter.id),
+          spanIds: expanded.map((r) => `${chapter.id}-sentence${r.id}`),
+        });
+
+        lastTranscriptionOffset = endOffset;
+        lastSentenceRange = expanded[expanded.length - 1] ?? null;
+      }
+
+      console.log(`  Total spans: ${allSpans.length}`);
+
+      // Step 5: Paginate with Playwright
+      console.log('');
+      console.log('Step 5: Paginating content...');
+      await initBrowser();
+
+      const pages = await paginateChapters(normalizedContents, profile);
+      console.log(`  Total pages: ${pages.length}`);
+
+      // Step 6: Assign spans to pages
+      console.log('Step 6: Mapping spans to pages...');
+      const spanToPageIndex = assignSpansToPages(pages);
+      console.log(`  Mapped ${spanToPageIndex.size} spans to pages`);
+
+      // Build ToC
+      const toc: TocEntry[] = [];
+      for (const chapter of spineFiles) {
+        const firstPage = pages.find((p) => p.chapterId === chapter.id);
+        if (firstPage) {
+          toc.push({
+            title: chapter.id,
+            pageIndex: firstPage.pageIndex,
+          });
+        }
+      }
+
+      // Step 7: Prepare audio files for bundle
+      console.log('Step 7: Preparing audio files...');
+
+      // Create audio file info from tracks
+      const _audioFileInfo = tracks.map((t) => ({
+        id: basename(t.path, '.m4b').replace(/[^a-zA-Z0-9]/g, '_'),
+        href: t.path,
+        mediaType: 'audio/mp4' as const,
+      }));
+
+      // Step 8: Write bundle
+      console.log('Step 8: Writing bundle...');
+
+      const bundleId =
+        opf.identifier?.trim().replace(/\s+/g, '-') ||
+        createHash('sha256').update(opf.title).digest('hex').slice(0, 16);
+
+      const meta: BundleMeta = {
+        bundleVersion: '1.0.0',
+        bundleId,
+        profile: profile.name,
+        title: opf.title,
+        pages: pages.length,
+        spans: allSpans.length,
+      };
+
+      if (createZip) {
+        await writeBundleAligned(
+          resolvedOutput,
+          meta,
+          allSpans,
+          pages,
+          spanToPageIndex,
+          toc,
+          tracks,
+        );
+      } else {
+        const uncompressedDir = resolvedOutput.replace(/\.zip$/, '');
+        await writeBundleAlignedUncompressed(
+          uncompressedDir,
+          meta,
+          allSpans,
+          pages,
+          spanToPageIndex,
+          toc,
+          tracks,
+        );
+        console.log(`  Bundle written to: ${uncompressedDir}`);
+      }
+
+      console.log('');
+      console.log('Alignment complete!');
+      console.log(`  Pages: ${meta.pages}`);
+      console.log(`  Spans: ${meta.spans}`);
+    } finally {
+      await container.close();
+    }
+  } finally {
+    if (!keepTemp) {
+      console.log('');
+      console.log('Cleaning up temp directory...');
+      await rm(tempDir, { recursive: true, force: true });
+    } else {
+      console.log(`Temp files kept at: ${tempDir}`);
+    }
+    await closeBrowser();
+  }
+}
+
+/**
+ * Generate normalized HTML for aligned content
+ */
+function generateNormalizedAlignedHTML(
+  taggedHtml: string,
+  profile: DeviceProfile,
+  chapterId: string,
+): string {
+  // Extract body content from the tagged HTML
+  const bodyMatch = taggedHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  const bodyContent = bodyMatch ? bodyMatch[1] : taggedHtml;
+
+  const contentWidth = profile.viewportWidth - profile.margins.left - profile.margins.right;
+  const contentHeight = profile.viewportHeight - profile.margins.top - profile.margins.bottom;
+
+  const css = `
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      width: ${profile.viewportWidth}px;
+      height: ${profile.viewportHeight}px;
+      overflow: hidden;
+    }
+    body {
+      font-family: ${profile.fontFamily};
+      font-size: ${profile.fontSize}px;
+      line-height: ${profile.lineHeight};
+      padding: ${profile.margins.top}px ${profile.margins.right}px ${profile.margins.bottom}px ${profile.margins.left}px;
+    }
+    .cadence-content {
+      width: ${contentWidth}px;
+      height: ${contentHeight}px;
+      overflow-y: scroll;
+      overflow-x: hidden;
+    }
+    /* Strip complex layouts that break CSS columns */
+    table, tr, td, th {
+      display: block !important;
+      width: auto !important;
+      padding: 0 !important;
+      float: none !important;
+    }
+    * {
+      float: none !important;
+      max-width: 100% !important;
+    }
+    img { max-width: 100% !important; height: auto !important; }
+  `;
+
+  // Escape HTML attribute value
+  const escapeAttr = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=${profile.viewportWidth}, height=${profile.viewportHeight}">
+  <style>${css}</style>
+</head>
+<body>
+  <div class="cadence-content" data-chapter-id="${escapeAttr(chapterId)}">
+    ${bodyContent}
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * Write bundle with aligned audio (from tracks, not from EPUB)
+ */
+async function writeBundleAligned(
+  outputPath: string,
+  meta: BundleMeta,
+  spans: Span[],
+  pages: any[],
+  spanToPageIndex: Map<string, number>,
+  toc: TocEntry[],
+  tracks: { path: string; duration: number; title?: string }[],
+): Promise<void> {
+  const { existsSync, rmSync, mkdirSync, createWriteStream } = await import('node:fs');
+  const archiver = (await import('archiver')).default;
+
+  // Write to temp directory first
+  const tempDir = outputPath.replace(/\.zip$/, '_temp');
+
+  try {
+    if (existsSync(tempDir)) {
+      rmSync(tempDir, { recursive: true });
+    }
+    mkdirSync(tempDir, { recursive: true });
+
+    await writeBundleAlignedUncompressed(tempDir, meta, spans, pages, spanToPageIndex, toc, tracks);
+
+    // Create ZIP archive
+    if (existsSync(outputPath)) {
+      rmSync(outputPath);
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const output = createWriteStream(outputPath);
+      const archive = archiver('zip', { zlib: { level: 9 } });
+
+      output.on('close', () => resolve());
+      archive.on('error', (err) => reject(err));
+
+      archive.pipe(output);
+      archive.directory(tempDir, false);
+      archive.finalize();
+    });
+
+    console.log(`  Bundle written to: ${outputPath}`);
+  } finally {
+    if (existsSync(tempDir)) {
+      rmSync(tempDir, { recursive: true });
+    }
+  }
+}
+
+/**
+ * Write uncompressed bundle with aligned audio
+ */
+async function writeBundleAlignedUncompressed(
+  outputDir: string,
+  meta: BundleMeta,
+  spans: Span[],
+  pages: any[],
+  spanToPageIndex: Map<string, number>,
+  toc: TocEntry[],
+  tracks: { path: string; duration: number; title?: string }[],
+): Promise<void> {
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const { concatenateAudioFiles, applyAudioOffsets } = await import('./audio/concat.js');
+
+  // Create directories
+  await mkdir(outputDir, { recursive: true });
+  await mkdir(join(outputDir, 'pages'), { recursive: true });
+
+  // Concatenate audio files into single OGG Opus file
+  const audioOutputPath = join(outputDir, 'audio.opus');
+  const trackPaths = tracks.map((t) => t.path);
+  const concatResult = await concatenateAudioFiles(trackPaths, audioOutputPath);
+
+  // Apply audio offsets to spans (modifies in place)
+  applyAudioOffsets(spans, concatResult.offsets);
+
+  // Write meta.json
+  await writeFile(join(outputDir, 'meta.json'), JSON.stringify(meta, null, 2));
+
+  // Write toc.json
+  await writeFile(join(outputDir, 'toc.json'), JSON.stringify(toc, null, 2));
+
+  // Write spans.jsonl (same format as compile command)
+  const spansContent = spans
+    .map((span) => {
+      const pageIndex = spanToPageIndex.get(span.id) ?? -1;
+      return JSON.stringify({
+        id: span.id,
+        clipBeginMs: span.clipBeginMs,
+        clipEndMs: span.clipEndMs,
+        pageIndex,
+      });
+    })
+    .join('\n');
+  await writeFile(join(outputDir, 'spans.jsonl'), spansContent);
+
+  // Write pages
+  for (const page of pages) {
+    await writeFile(
+      join(outputDir, 'pages', `${page.pageIndex}.json`),
+      JSON.stringify(page, null, 2),
+    );
+  }
+}
 
 /**
  * Main compilation pipeline
@@ -78,7 +772,7 @@ async function compileEPUB(
   inputPath: string,
   outputPath: string | undefined,
   createZip: boolean,
-  profile: DeviceProfile
+  profile: DeviceProfile,
 ): Promise<void> {
   const resolvedInput = resolve(inputPath);
   const defaultOutput = resolvedInput.replace(/\.epub$/i, '.bundle.zip');
@@ -133,13 +827,7 @@ async function compileEPUB(
 
     for (const chapter of chaptersWithSMIL) {
       console.log(`  Normalizing: ${chapter.href}`);
-      const content = await normalizeXHTML(
-        container,
-        chapter.href,
-        chapter.id,
-        allSpans,
-        profile
-      );
+      const content = await normalizeXHTML(container, chapter.href, chapter.id, allSpans, profile);
       normalizedContents.push(content);
     }
 
@@ -178,7 +866,7 @@ async function compileEPUB(
 
     // Generate stable bundle ID from dc:identifier or fallback to hash
     let bundleId: string;
-    if (opf.identifier && opf.identifier.trim()) {
+    if (opf.identifier?.trim()) {
       // Use dc:identifier (often ISBN) - clean it up
       bundleId = opf.identifier.trim().replace(/\s+/g, '-');
     } else {
@@ -206,7 +894,7 @@ async function compileEPUB(
         spanToPageIndex,
         toc,
         audioFiles,
-        container
+        container,
       );
     } else {
       const uncompressedDir = resolvedOutput.replace(/\.zip$/, '');
@@ -218,7 +906,7 @@ async function compileEPUB(
         spanToPageIndex,
         toc,
         audioFiles,
-        container
+        container,
       );
     }
 
