@@ -146,7 +146,7 @@ fun PlayerScreen(
         val page = bundle.getPage(pageIndex) ?: return null
         for (spanRect in page.spanRects) {
             val span = bundle.getSpanById(spanRect.spanId) ?: continue
-            if (span.hasValidTiming() && span.pageIndex == pageIndex) {
+            if (span.hasValidTiming()) {
                 return span
             }
         }
