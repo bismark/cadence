@@ -27,16 +27,19 @@ export default function androidScreenshotExtension(pi: ExtensionAPI) {
       ),
     }),
 
-    async execute(toolCallId, params, onUpdate, ctx, signal) {
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
       // Create temp file path for screenshot
       const tempDir = os.tmpdir();
       const timestamp = Date.now();
       const localPath = path.join(tempDir, `android-screenshot-${timestamp}.png`);
       const devicePath = `/sdcard/screenshot-${timestamp}.png`;
+      const safeSignal = signal && typeof signal.addEventListener === "function" ? signal : undefined;
+      const execOptions = (timeout: number) =>
+        safeSignal ? { signal: safeSignal, timeout } : { timeout };
 
       try {
         // Check if adb is available
-        const adbCheck = await pi.exec("which", ["adb"], { signal, timeout: 5000 });
+        const adbCheck = await pi.exec("which", ["adb"], execOptions(5000));
         if (adbCheck.code !== 0) {
           return {
             content: [{ type: "text", text: "Error: adb not found in PATH" }],
@@ -45,7 +48,7 @@ export default function androidScreenshotExtension(pi: ExtensionAPI) {
         }
 
         // Check for connected devices
-        const devicesResult = await pi.exec("adb", ["devices"], { signal, timeout: 5000 });
+        const devicesResult = await pi.exec("adb", ["devices"], execOptions(5000));
         if (devicesResult.code !== 0) {
           return {
             content: [{ type: "text", text: `Error checking devices: ${devicesResult.stderr}` }],
@@ -78,7 +81,7 @@ export default function androidScreenshotExtension(pi: ExtensionAPI) {
         const screencapResult = await pi.exec(
           "adb",
           ["shell", "screencap", "-p", devicePath],
-          { signal, timeout: 10000 }
+          execOptions(10000)
         );
 
         if (screencapResult.code !== 0) {
@@ -94,7 +97,7 @@ export default function androidScreenshotExtension(pi: ExtensionAPI) {
         const pullResult = await pi.exec(
           "adb",
           ["pull", devicePath, localPath],
-          { signal, timeout: 10000 }
+          execOptions(10000)
         );
 
         if (pullResult.code !== 0) {
@@ -105,7 +108,7 @@ export default function androidScreenshotExtension(pi: ExtensionAPI) {
         }
 
         // Clean up device file
-        await pi.exec("adb", ["shell", "rm", devicePath], { signal, timeout: 5000 });
+        await pi.exec("adb", ["shell", "rm", devicePath], execOptions(5000));
 
         // Read the screenshot file
         const imageData = fs.readFileSync(localPath);
@@ -138,7 +141,7 @@ export default function androidScreenshotExtension(pi: ExtensionAPI) {
         // Clean up files on error
         try {
           if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
-          await pi.exec("adb", ["shell", "rm", "-f", devicePath], { timeout: 5000 });
+          await pi.exec("adb", ["shell", "rm", "-f", devicePath], execOptions(5000));
         } catch {
           // Ignore cleanup errors
         }
