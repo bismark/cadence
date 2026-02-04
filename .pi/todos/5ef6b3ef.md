@@ -7,12 +7,8 @@
     "bug",
     "P2"
   ],
-  "status": "open",
+  "status": "closed",
   "created_at": "2026-02-04T06:49:37.546Z"
 }
 
-Issue: .pi/extensions/push-bundle.ts splits args on whitespace, breaking bundle/epub paths with spaces.
-
-Fix: Use a proper argv parser (e.g., string-argv) or a simple quoted-arg parser; preserve quoted paths.
-
-Reference: args parsing in push-bundle command handler (.pi/extensions/push-bundle.ts).
+Updated push-bundle arg parsing to handle quoted paths with spaces via parseArgs() regex parser. File: .pi/extensions/push-bundle.ts.

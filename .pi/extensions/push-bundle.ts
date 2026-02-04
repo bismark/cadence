@@ -7,6 +7,19 @@ const DEVICE_PATH = '/sdcard/Download/cadence-bundle';
 const APP_ID = 'com.cadence.player';
 const APP_ACTIVITY = 'com.cadence.player/.MainActivity';
 
+function parseArgs(input?: string): string[] {
+  if (!input) return [];
+  const tokens: string[] = [];
+  const regex = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null = null;
+
+  while ((match = regex.exec(input)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? '');
+  }
+
+  return tokens;
+}
+
 function resolveBundlePath(cwd: string, fixturesDir: string, input: string): string | null {
   const candidate = input.endsWith('.bundle') ? input : `${input}.bundle`;
 
@@ -157,7 +170,7 @@ export default function (pi: ExtensionAPI) {
     description:
       'Compile EPUB and push Cadence bundle to Android emulator (use --bundle <name> to push an existing bundle)',
     handler: async (args, ctx) => {
-      const tokens = args?.trim().split(/\s+/).filter(Boolean) ?? [];
+      const tokens = parseArgs(args);
       const bundleIndex = tokens.indexOf('--bundle');
       const bundleArg = bundleIndex >= 0 ? tokens[bundleIndex + 1] : undefined;
 
