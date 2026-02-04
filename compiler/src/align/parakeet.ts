@@ -89,6 +89,10 @@ async function runParakeet(
     await new Promise<void>((resolve, reject) => {
       const proc = spawn(cmd, args, {
         stdio: ['ignore', 'inherit', 'inherit'], // Show progress on terminal
+        env: {
+          ...process.env,
+          HF_HUB_OFFLINE: '1', // Prevent network requests to Hugging Face
+        },
       });
 
       proc.on('close', (code) => {
