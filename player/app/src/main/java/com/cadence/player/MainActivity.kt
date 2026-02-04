@@ -121,13 +121,20 @@ fun CadenceApp() {
                 "/sdcard/Download/cadence-bundle",
                 // Direct path for testing
                 "/sdcard/cadence-bundle"
-            )
+            ).flatMap { path ->
+                listOf(path, "$path.zip")
+            }
 
             var loadedBundle: CadenceBundle? = null
             for (path in possiblePaths) {
-                val dir = File(path)
-                if (dir.exists() && dir.isDirectory && File(dir, "meta.json").exists()) {
-                    loadedBundle = BundleLoader.loadBundle(path)
+                val bundleFile = File(path)
+                val isDirectoryBundle =
+                    bundleFile.exists() && bundleFile.isDirectory && File(bundleFile, "meta.json").exists()
+                val isZipBundle =
+                    bundleFile.exists() && bundleFile.isFile && bundleFile.extension.lowercase() == "zip"
+
+                if (isDirectoryBundle || isZipBundle) {
+                    loadedBundle = BundleLoader.loadBundle(context, path)
                     break
                 }
             }
