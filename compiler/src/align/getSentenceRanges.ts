@@ -65,11 +65,29 @@ function findStartTimestamp(matchStartIndex: number, transcription: Transcriptio
   };
 }
 
-export function findEndTimestamp(matchEndIndex: number, transcription: Transcription) {
-  const entry = transcription.wordTimeline.findLast(
-    (entry) => (entry.startOffsetUtf16 ?? 0) < matchEndIndex,
+function findEndTimestampEntry(matchEndIndex: number, transcription: Transcription) {
+  return (
+    transcription.wordTimeline.findLast(
+      (entry) => (entry.startOffsetUtf16 ?? 0) < matchEndIndex,
+    ) ?? null
   );
-  return entry?.endTime ?? null;
+}
+
+function findEndTimestampForAudiofile(
+  matchEndIndex: number,
+  audiofile: string,
+  transcription: Transcription,
+) {
+  return (
+    transcription.wordTimeline.findLast(
+      (entry) =>
+        entry.audiofile === audiofile && (entry.startOffsetUtf16 ?? 0) < matchEndIndex,
+    ) ?? null
+  );
+}
+
+export function findEndTimestamp(matchEndIndex: number, transcription: Transcription) {
+  return findEndTimestampEntry(matchEndIndex, transcription)?.endTime ?? null;
 }
 
 function getWindowIndexFromOffset(window: string[], offset: number) {
@@ -168,15 +186,20 @@ export async function getSentenceRanges(
     const start = startResult.start;
     const audiofile = startResult.audiofile;
 
-    const end =
-      findEndTimestamp(
-        firstMatch.index +
-          firstMatch.match.length +
-          transcriptionOffset +
-          transcriptionWindowOffset +
-          chapterOffset,
-        transcription,
-      ) ?? startResult.end;
+    const matchEndIndex =
+      firstMatch.index +
+      firstMatch.match.length +
+      transcriptionOffset +
+      transcriptionWindowOffset +
+      chapterOffset;
+
+    const endEntry = findEndTimestampEntry(matchEndIndex, transcription);
+    let end = endEntry?.endTime ?? startResult.end;
+
+    if (endEntry && endEntry.audiofile !== audiofile) {
+      const fallbackEntry = findEndTimestampForAudiofile(matchEndIndex, audiofile, transcription);
+      end = fallbackEntry?.endTime ?? startResult.end;
+    }
 
     // Adjust previous sentence's end time to align with current sentence's start
     // Note: We preserve actual STT timestamps (don't force start=0) because we
