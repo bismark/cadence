@@ -468,6 +468,9 @@ async function alignEPUB(
 
         if (tracks.length === 1 && transcriptionConsumedPct > 80) {
           // Skip expensive search - we've consumed most of the audio
+          if (lastTranscriptionOffset < transcription.transcript.length) {
+            transcriptionOffset = lastTranscriptionOffset;
+          }
         } else {
           const result = findChapterOffset(sentences, transcription, lastTranscriptionOffset);
           startSentence = result.startSentence;
