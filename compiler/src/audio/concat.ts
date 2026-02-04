@@ -140,15 +140,20 @@ export async function concatenateAudio(
 
     console.log(`  Extracting ${audioFiles.length} audio files...`);
 
-    // Extract each audio file and get its duration
+    // Extract each audio file to a temp path
     for (const audioPath of audioFiles) {
       const audioData = await container.readFile(audioPath);
       const tempPath = join(tempDir, audioPath.replace(/\//g, '_'));
       await writeFile(tempPath, audioData);
       tempFiles.push(tempPath);
+    }
 
-      // Get duration using ffprobe
-      const durationMs = await getAudioDuration(tempPath);
+    // Probe durations in parallel
+    const durationsMs = await Promise.all(tempFiles.map((filePath) => getAudioDuration(filePath)));
+
+    for (let i = 0; i < audioFiles.length; i++) {
+      const audioPath = audioFiles[i]!;
+      const durationMs = durationsMs[i]!;
 
       offsets.set(audioPath, {
         originalPath: audioPath,
@@ -234,9 +239,14 @@ export async function concatenateAudioFiles(
 
     console.log(`  Processing ${audioFiles.length} audio files...`);
 
-    // Get duration for each audio file
-    for (const audioPath of audioFiles) {
-      const durationMs = await getAudioDuration(audioPath);
+    // Get durations for each audio file in parallel
+    const durationsMs = await Promise.all(
+      audioFiles.map((audioPath) => getAudioDuration(audioPath)),
+    );
+
+    for (let i = 0; i < audioFiles.length; i++) {
+      const audioPath = audioFiles[i]!;
+      const durationMs = durationsMs[i]!;
 
       offsets.set(audioPath, {
         originalPath: audioPath,
