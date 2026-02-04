@@ -8,7 +8,7 @@ import { resolvePath } from './container.js';
 export async function parseSMIL(
   container: EPUBContainer,
   smilPath: string,
-  chapterId: string
+  chapterId: string,
 ): Promise<Span[]> {
   const content = await container.readFile(smilPath);
   const xml = content.toString('utf-8');
@@ -42,13 +42,18 @@ function extractParElements(
   node: Record<string, unknown>,
   smilPath: string,
   chapterId: string,
-  spans: Span[]
+  spans: Span[],
 ): void {
   // Process par elements at this level
   const parElements = node.par;
   if (Array.isArray(parElements)) {
     for (const par of parElements) {
-      const span = parseParElement(par as Record<string, unknown>, smilPath, chapterId, spans.length);
+      const span = parseParElement(
+        par as Record<string, unknown>,
+        smilPath,
+        chapterId,
+        spans.length,
+      );
       if (span) {
         spans.push(span);
       }
@@ -73,7 +78,7 @@ function parseParElement(
   par: Record<string, unknown>,
   smilPath: string,
   chapterId: string,
-  index: number
+  index: number,
 ): Span | null {
   // Get the par ID or generate one
   const parId = (par['@_id'] as string) || `span_${chapterId}_${index}`;
@@ -164,7 +169,7 @@ export function parseClipTime(time: string): number {
 export async function parseChapterSMIL(
   container: EPUBContainer,
   smilPath: string,
-  chapterId: string
+  chapterId: string,
 ): Promise<Span[]> {
   return parseSMIL(container, smilPath, chapterId);
 }

@@ -70,7 +70,7 @@ export interface TextRun {
   y: number;
   width: number;
   height: number;
-  spanId?: string;  // Present if this run is part of a synchronized span
+  spanId?: string; // Present if this run is part of a synchronized span
   style: TextStyle;
 }
 
@@ -146,7 +146,7 @@ export interface BundleMeta {
  */
 export interface TocEntry {
   title: string;
-  pageIndex: number;  // Global page index where this chapter starts
+  pageIndex: number; // Global page index where this chapter starts
 }
 
 /**
@@ -157,7 +157,7 @@ export interface SpanEntry {
   id: string;
   clipBeginMs: number;
   clipEndMs: number;
-  pageIndex: number;  // Global page index
+  pageIndex: number; // Global page index
 }
 
 /**
@@ -194,6 +194,6 @@ export interface CompilationResult {
  */
 export interface ValidationResult {
   valid: boolean;
-  errors: string[];   // Fatal issues
+  errors: string[]; // Fatal issues
   warnings: string[]; // Non-fatal issues
 }

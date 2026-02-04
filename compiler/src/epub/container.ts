@@ -1,5 +1,5 @@
-import { open, Entry, ZipFile } from 'yauzl';
 import { XMLParser } from 'fast-xml-parser';
+import { type Entry, open, type ZipFile } from 'yauzl';
 import type { EPUBContainer } from '../types.js';
 
 /**
@@ -99,10 +99,7 @@ function readEntry(zipFile: ZipFile, entry: Entry): Promise<Buffer> {
 /**
  * Find the OPF file path by reading META-INF/container.xml
  */
-async function findOPFPath(
-  entries: Map<string, Entry>,
-  zipFile: ZipFile
-): Promise<string> {
+async function findOPFPath(entries: Map<string, Entry>, zipFile: ZipFile): Promise<string> {
   const containerPath = 'META-INF/container.xml';
   const entry = entries.get(containerPath);
 
@@ -155,7 +152,7 @@ export function resolvePath(basePath: string, relativePath: string): string {
   const [pathPart, fragment] = relativePath.split('#');
 
   // Resolve the path
-  let resolved = baseDir + pathPart;
+  const resolved = baseDir + pathPart;
 
   // Normalize ".." and "."
   const parts = resolved.split('/');

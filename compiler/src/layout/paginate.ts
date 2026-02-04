@@ -1,9 +1,9 @@
-import { chromium, Browser, Page as PlaywrightPage } from 'playwright';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import type { DeviceProfile, Page, PageSpanRect, TextRun, NormalizedContent, Span } from '../types.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { type Browser, chromium, type Page as PlaywrightPage } from 'playwright';
 import { getContentArea } from '../device-profiles/profiles.js';
+import type { DeviceProfile, NormalizedContent, Page, PageSpanRect, TextRun } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -90,12 +90,13 @@ export async function closeBrowser(): Promise<void> {
  */
 export async function paginateContent(
   content: NormalizedContent,
-  profile: DeviceProfile
+  profile: DeviceProfile,
 ): Promise<Page[]> {
   if (!browser) {
     await initBrowser();
   }
 
+  // Browser is guaranteed to be initialized at this point
   const page = await browser!.newPage();
 
   try {
@@ -127,8 +128,7 @@ export async function paginateContent(
       }
     `;
 
-    const htmlWithColumns = content.html
-      .replace('<style>', `<style>${fontFaceCSS}${columnCSS}`);
+    const htmlWithColumns = content.html.replace('<style>', `<style>${fontFaceCSS}${columnCSS}`);
 
     await page.setContent(htmlWithColumns, {
       waitUntil: 'domcontentloaded',
@@ -137,12 +137,15 @@ export async function paginateContent(
     await page.evaluate(() => document.fonts.ready);
 
     // Count how many columns were created
-    const columnCount = await page.evaluate(({ columnWidth, columnGap }) => {
-      const el = document.querySelector('.cadence-content') as HTMLElement;
-      if (!el) return 1;
-      // Total width divided by (column width + gap) gives column count
-      return Math.ceil(el.scrollWidth / (columnWidth + columnGap));
-    }, { columnWidth, columnGap: profile.margins.left + profile.margins.right });
+    const columnCount = await page.evaluate(
+      ({ columnWidth, columnGap }) => {
+        const el = document.querySelector('.cadence-content') as HTMLElement;
+        if (!el) return 1;
+        // Total width divided by (column width + gap) gives column count
+        return Math.ceil(el.scrollWidth / (columnWidth + columnGap));
+      },
+      { columnWidth, columnGap: profile.margins.left + profile.margins.right },
+    );
 
     console.log(`      Using CSS columns: ${columnCount} pages`);
 
@@ -161,18 +164,34 @@ export async function paginateContent(
             width: number;
             height: number;
             spanId?: string;
-            style: { fontFamily: string; fontSize: number; fontWeight: number; fontStyle: 'normal' | 'italic'; color: string };
+            style: {
+              fontFamily: string;
+              fontSize: number;
+              fontWeight: number;
+              fontStyle: 'normal' | 'italic';
+              color: string;
+            };
           }> = [];
 
-          const spanRects: Array<{ spanId: string; rects: Array<{ x: number; y: number; width: number; height: number }> }> = [];
+          const spanRects: Array<{
+            spanId: string;
+            rects: Array<{ x: number; y: number; width: number; height: number }>;
+          }> = [];
 
           // Helper functions
           function isInColumn(rect: DOMRect): boolean {
             const rectMidX = rect.left + rect.width / 2;
-            return rectMidX >= colLeft + marginLeft && rectMidX < colLeft + marginLeft + columnWidth;
+            return (
+              rectMidX >= colLeft + marginLeft && rectMidX < colLeft + marginLeft + columnWidth
+            );
           }
 
-          function toPageCoords(rect: DOMRect): { x: number; y: number; width: number; height: number } {
+          function toPageCoords(rect: DOMRect): {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+          } {
             return {
               x: Math.round(rect.left - colLeft - marginLeft),
               y: Math.round(rect.top - marginTop),
@@ -210,7 +229,10 @@ export async function paginateContent(
           const walker = document.createTreeWalker(
             document.querySelector('.cadence-content') || document.body,
             NodeFilter.SHOW_TEXT,
-            { acceptNode: (node) => node.textContent?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT }
+            {
+              acceptNode: (node) =>
+                node.textContent?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+            },
           );
 
           let textNode: Text | null;
@@ -226,7 +248,9 @@ export async function paginateContent(
               fontFamily: computedStyle.fontFamily,
               fontSize: parseFloat(computedStyle.fontSize),
               fontWeight: parseInt(computedStyle.fontWeight, 10) || 400,
-              fontStyle: (computedStyle.fontStyle === 'italic' ? 'italic' : 'normal') as 'normal' | 'italic',
+              fontStyle: (computedStyle.fontStyle === 'italic' ? 'italic' : 'normal') as
+                | 'normal'
+                | 'italic',
               color: computedStyle.color,
             };
 
@@ -272,7 +296,7 @@ export async function paginateContent(
 
           // Dedupe text runs by position
           const seen = new Set<string>();
-          const dedupedRuns = textRuns.filter(run => {
+          const dedupedRuns = textRuns.filter((run) => {
             const key = `${run.x},${run.y},${run.text}`;
             if (seen.has(key)) return false;
             seen.add(key);
@@ -281,11 +305,18 @@ export async function paginateContent(
 
           return { textRuns: dedupedRuns, spanRects };
         },
-        { colIndex, colLeft, columnWidth, columnHeight, marginTop: profile.margins.top, marginLeft: profile.margins.left }
+        {
+          colIndex,
+          colLeft,
+          columnWidth,
+          columnHeight,
+          marginTop: profile.margins.top,
+          marginLeft: profile.margins.left,
+        },
       );
 
       // Build page
-      const visibleSpanIds = pageData.spanRects.map(sr => sr.spanId);
+      const visibleSpanIds = pageData.spanRects.map((sr) => sr.spanId);
 
       pages.push({
         pageId: `${content.chapterId}_p${String(colIndex + 1).padStart(4, '0')}`,
@@ -310,18 +341,21 @@ export async function paginateContent(
  * Extract rectangles for all spans visible on the current page view
  * Returns page-local coordinates (relative to content area, not viewport)
  */
-async function extractSpanRects(
+async function _extractSpanRects(
   page: PlaywrightPage,
   pageHeight: number,
   marginTop: number,
   marginLeft: number,
   actualScrollTop: number,
   pageContentStart: number,
-  pageContentEnd: number
+  pageContentEnd: number,
 ): Promise<PageSpanRect[]> {
   const result = await page.evaluate(
     ({ pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd }) => {
-      const spanRects: Array<{ spanId: string; rects: Array<{ x: number; y: number; width: number; height: number }> }> = [];
+      const spanRects: Array<{
+        spanId: string;
+        rects: Array<{ x: number; y: number; width: number; height: number }>;
+      }> = [];
       const elements = Array.from(document.querySelectorAll('[data-span-id]'));
 
       for (const el of elements) {
@@ -361,7 +395,7 @@ async function extractSpanRects(
 
       return spanRects;
     },
-    { pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd }
+    { pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd },
   );
 
   return result;
@@ -371,14 +405,14 @@ async function extractSpanRects(
  * Extract positioned text runs visible on the current page view
  * Uses caret probing to accurately extract text per visual line
  */
-async function extractTextRuns(
+async function _extractTextRuns(
   page: PlaywrightPage,
   pageHeight: number,
   marginTop: number,
   marginLeft: number,
   actualScrollTop: number,
   pageContentStart: number,
-  pageContentEnd: number
+  pageContentEnd: number,
 ): Promise<TextRun[]> {
   const result = await page.evaluate(
     ({ pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd }) => {
@@ -426,10 +460,7 @@ async function extractTextRuns(
       /**
        * Extract line text using caret probing
        */
-      function extractLineText(
-        rect: DOMRect,
-        sourceRange: Range
-      ): string {
+      function extractLineText(rect: DOMRect, sourceRange: Range): string {
         const midY = rect.top + rect.height / 2;
 
         // Probe start and end of line with small insets
@@ -441,14 +472,18 @@ async function extractTextRuns(
         }
 
         // Clamp carets to source range
-        const clampedStart = isCaretInRange(startCaret, sourceRange) ? startCaret : {
-          node: sourceRange.startContainer,
-          offset: sourceRange.startOffset
-        };
-        const clampedEnd = isCaretInRange(endCaret, sourceRange) ? endCaret : {
-          node: sourceRange.endContainer,
-          offset: sourceRange.endOffset
-        };
+        const clampedStart = isCaretInRange(startCaret, sourceRange)
+          ? startCaret
+          : {
+              node: sourceRange.startContainer,
+              offset: sourceRange.startOffset,
+            };
+        const clampedEnd = isCaretInRange(endCaret, sourceRange)
+          ? endCaret
+          : {
+              node: sourceRange.endContainer,
+              offset: sourceRange.endOffset,
+            };
 
         // Create sub-range for this line
         try {
@@ -497,10 +532,10 @@ async function extractTextRuns(
        * Merge rects on the same line into one bounding rect
        */
       function mergeLineRects(rects: DOMRect[]): DOMRect {
-        const left = Math.min(...rects.map(r => r.left));
-        const right = Math.max(...rects.map(r => r.right));
-        const top = Math.min(...rects.map(r => r.top));
-        const bottom = Math.max(...rects.map(r => r.bottom));
+        const left = Math.min(...rects.map((r) => r.left));
+        const right = Math.max(...rects.map((r) => r.right));
+        const top = Math.min(...rects.map((r) => r.top));
+        const bottom = Math.max(...rects.map((r) => r.bottom));
 
         return new DOMRect(left, top, right - left, bottom - top);
       }
@@ -515,7 +550,7 @@ async function extractTextRuns(
             if (!text) return NodeFilter.FILTER_REJECT;
             return NodeFilter.FILTER_ACCEPT;
           },
-        }
+        },
       );
 
       let textNode: Text | null;
@@ -533,7 +568,9 @@ async function extractTextRuns(
           fontFamily: computedStyle.fontFamily,
           fontSize: parseFloat(computedStyle.fontSize),
           fontWeight: parseInt(computedStyle.fontWeight, 10) || 400,
-          fontStyle: (computedStyle.fontStyle === 'italic' ? 'italic' : 'normal') as 'normal' | 'italic',
+          fontStyle: (computedStyle.fontStyle === 'italic' ? 'italic' : 'normal') as
+            | 'normal'
+            | 'italic',
           color: computedStyle.color,
         };
 
@@ -579,7 +616,7 @@ async function extractTextRuns(
 
       return textRuns;
     },
-    { pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd }
+    { pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd },
   );
 
   return result;
@@ -590,7 +627,7 @@ async function extractTextRuns(
  */
 export async function paginateChapters(
   contents: NormalizedContent[],
-  profile: DeviceProfile
+  profile: DeviceProfile,
 ): Promise<Page[]> {
   const allPages: Page[] = [];
   let globalPageIndex = 0;
@@ -615,9 +652,7 @@ export async function paginateChapters(
 /**
  * Map span IDs to their global page indices
  */
-export function assignSpansToPages(
-  pages: Page[]
-): Map<string, number> {
+export function assignSpansToPages(pages: Page[]): Map<string, number> {
   const spanToPageIndex = new Map<string, number>();
 
   for (const page of pages) {

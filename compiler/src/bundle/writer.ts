@@ -1,16 +1,9 @@
-import { createWriteStream, mkdirSync, rmSync, existsSync } from 'node:fs';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { createWriteStream, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import archiver from 'archiver';
-import type {
-  BundleMeta,
-  Page,
-  Span,
-  SpanEntry,
-  TocEntry,
-  EPUBContainer,
-} from '../types.js';
-import { concatenateAudio, applyAudioOffsets } from '../audio/concat.js';
+import { applyAudioOffsets, concatenateAudio } from '../audio/concat.js';
+import type { BundleMeta, EPUBContainer, Page, Span, SpanEntry, TocEntry } from '../types.js';
 
 /**
  * Write the compiled bundle to a ZIP file
@@ -23,7 +16,7 @@ export async function writeBundle(
   spanToPageIndex: Map<string, number>,
   toc: TocEntry[],
   audioFiles: string[],
-  container: EPUBContainer
+  container: EPUBContainer,
 ): Promise<void> {
   // Create a temporary directory for bundle contents
   const tempDir = outputPath.replace(/\.zip$/, '_temp');
@@ -89,7 +82,7 @@ async function writeTocJson(dir: string, toc: TocEntry[]): Promise<void> {
 async function writeSpansJsonl(
   dir: string,
   spans: Span[],
-  spanToPageIndex: Map<string, number>
+  spanToPageIndex: Map<string, number>,
 ): Promise<void> {
   const spansPath = join(dir, 'spans.jsonl');
   const lines: string[] = [];
@@ -163,7 +156,7 @@ export async function writeBundleUncompressed(
   spanToPageIndex: Map<string, number>,
   toc: TocEntry[],
   audioFiles: string[],
-  container: EPUBContainer
+  container: EPUBContainer,
 ): Promise<void> {
   // Clean up any existing directory
   if (existsSync(outputDir)) {

@@ -1,6 +1,6 @@
 import * as parse5 from 'parse5';
-import type { EPUBContainer, Span, NormalizedContent, DeviceProfile } from '../types.js';
 import { generateProfileCSS } from '../device-profiles/profiles.js';
+import type { DeviceProfile, EPUBContainer, NormalizedContent, Span } from '../types.js';
 
 type Node = parse5.DefaultTreeAdapterMap['node'];
 type Element = parse5.DefaultTreeAdapterMap['element'];
@@ -15,7 +15,7 @@ export async function normalizeXHTML(
   xhtmlPath: string,
   chapterId: string,
   spans: Span[],
-  profile: DeviceProfile
+  profile: DeviceProfile,
 ): Promise<NormalizedContent> {
   const content = await container.readFile(xhtmlPath);
   const html = content.toString('utf-8');
@@ -103,11 +103,7 @@ function findBody(document: Document): Element | null {
 /**
  * Generate normalized HTML with proper CSS for pagination
  */
-function generateNormalizedHTML(
-  body: Element,
-  profile: DeviceProfile,
-  chapterId: string
-): string {
+function generateNormalizedHTML(body: Element, profile: DeviceProfile, chapterId: string): string {
   const css = generateProfileCSS(profile);
   const bodyContent = serializeChildren(body);
 
@@ -153,8 +149,20 @@ function serializeNode(node: Node): string {
 
     // Handle void elements
     const voidElements = new Set([
-      'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
-      'link', 'meta', 'param', 'source', 'track', 'wbr'
+      'area',
+      'base',
+      'br',
+      'col',
+      'embed',
+      'hr',
+      'img',
+      'input',
+      'link',
+      'meta',
+      'param',
+      'source',
+      'track',
+      'wbr',
     ]);
 
     const attrs = serializeAttributes(node);
@@ -179,19 +187,14 @@ function serializeAttributes(element: Element): string {
     return '';
   }
 
-  return element.attrs
-    .map((attr) => ` ${attr.name}="${escapeAttr(attr.value)}"`)
-    .join('');
+  return element.attrs.map((attr) => ` ${attr.name}="${escapeAttr(attr.value)}"`).join('');
 }
 
 /**
  * Escape HTML special characters
  */
 function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /**

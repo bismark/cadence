@@ -2,16 +2,16 @@
  * Preview renderer - generates PNG images from compiled bundles
  */
 
-import { chromium } from 'playwright';
-import { readFile, readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Page, SpanEntry, BundleMeta, DeviceProfile } from './types.js';
+import { chromium } from 'playwright';
 import { getProfile } from './device-profiles/profiles.js';
+import type { BundleMeta, DeviceProfile, Page, SpanEntry } from './types.js';
 
 interface BundleData {
   meta: BundleMeta;
   spans: SpanEntry[];
-  pages: Page[];  // Ordered by pageIndex
+  pages: Page[]; // Ordered by pageIndex
 }
 
 /**
@@ -159,7 +159,7 @@ export async function renderPageToPNG(
   page: Page,
   profile: DeviceProfile,
   outputPath: string,
-  activeSpanId?: string
+  activeSpanId?: string,
 ): Promise<void> {
   const browser = await chromium.launch({ headless: true });
 
@@ -189,7 +189,7 @@ export async function renderPageToPNG(
 export async function previewAtTimestamp(
   bundlePath: string,
   timestampMs: number,
-  outputPath: string
+  outputPath: string,
 ): Promise<{ pageIndex: number; spanId: string | null; timestampMs: number }> {
   const bundle = await loadBundle(bundlePath);
 

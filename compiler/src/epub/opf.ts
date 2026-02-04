@@ -1,5 +1,5 @@
 import { XMLParser } from 'fast-xml-parser';
-import type { EPUBContainer, OPFPackage, ManifestItem, SpineItem } from '../types.js';
+import type { EPUBContainer, ManifestItem, OPFPackage, SpineItem } from '../types.js';
 import { resolvePath } from './container.js';
 
 /**
@@ -12,7 +12,8 @@ export async function parseOPF(container: EPUBContainer): Promise<OPFPackage> {
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: '@_',
-    isArray: (name) => ['item', 'itemref', 'dc:title', 'dc:creator', 'dc:identifier'].includes(name),
+    isArray: (name) =>
+      ['item', 'itemref', 'dc:title', 'dc:creator', 'dc:identifier'].includes(name),
   });
 
   const parsed = parser.parse(xml);
@@ -57,7 +58,7 @@ export async function parseOPF(container: EPUBContainer): Promise<OPFPackage> {
  */
 function parseManifest(
   manifestNode: { item?: unknown[] },
-  opfPath: string
+  opfPath: string,
 ): Map<string, ManifestItem> {
   const manifest = new Map<string, ManifestItem>();
 
@@ -112,7 +113,7 @@ function parseSpine(spineNode: { itemref?: unknown[] }): SpineItem[] {
  */
 function buildMediaOverlayMap(
   manifest: Map<string, ManifestItem>,
-  spine: SpineItem[]
+  spine: SpineItem[],
 ): Map<string, string> {
   const overlays = new Map<string, string>();
 
@@ -134,7 +135,7 @@ function buildMediaOverlayMap(
  * Get ordered list of XHTML files from spine
  */
 export function getSpineXHTMLFiles(
-  opf: OPFPackage
+  opf: OPFPackage,
 ): Array<{ id: string; href: string; smilHref?: string }> {
   const result: Array<{ id: string; href: string; smilHref?: string }> = [];
 

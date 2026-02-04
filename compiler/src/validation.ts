@@ -2,8 +2,8 @@
  * Runtime validation for compilation output
  */
 
-import type { Page, Span, DeviceProfile, ValidationResult } from './types.js';
 import { getContentArea } from './device-profiles/profiles.js';
+import type { DeviceProfile, Page, Span, ValidationResult } from './types.js';
 
 /**
  * Validate compilation output and return any issues found
@@ -12,7 +12,7 @@ export function validateCompilationResult(
   spans: Span[],
   pages: Page[],
   spanToPageIndex: Map<string, number>,
-  profile: DeviceProfile
+  profile: DeviceProfile,
 ): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -46,7 +46,9 @@ export function validateCompilationResult(
     }
   }
   if (unassignedCount > 0) {
-    warnings.push(`${unassignedCount} span${unassignedCount > 1 ? 's have' : ' has'} no page assignment`);
+    warnings.push(
+      `${unassignedCount} span${unassignedCount > 1 ? 's have' : ' has'} no page assignment`,
+    );
   }
 
   // Check 5-7: Validate all rects on all pages
@@ -58,7 +60,9 @@ export function validateCompilationResult(
           warnings.push(`Rect for span "${spanRect.spanId}" has non-positive width: ${rect.width}`);
         }
         if (rect.height <= 0) {
-          warnings.push(`Rect for span "${spanRect.spanId}" has non-positive height: ${rect.height}`);
+          warnings.push(
+            `Rect for span "${spanRect.spanId}" has non-positive height: ${rect.height}`,
+          );
         }
 
         // Check: x,y >= 0
@@ -73,13 +77,13 @@ export function validateCompilationResult(
         if (rect.x + rect.width > contentArea.width) {
           warnings.push(
             `Rect for span "${spanRect.spanId}" extends beyond content width ` +
-            `(${rect.x + rect.width} > ${contentArea.width})`
+              `(${rect.x + rect.width} > ${contentArea.width})`,
           );
         }
         if (rect.y + rect.height > contentArea.height) {
           warnings.push(
             `Rect for span "${spanRect.spanId}" extends beyond content height ` +
-            `(${rect.y + rect.height} > ${contentArea.height})`
+              `(${rect.y + rect.height} > ${contentArea.height})`,
           );
         }
       }

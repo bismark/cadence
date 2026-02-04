@@ -12,7 +12,7 @@ export const mantaProfile: DeviceProfile = {
   margins: {
     top: 100,
     right: 80,
-    bottom: 200,  // Extra space for player toolbar
+    bottom: 200, // Extra space for player toolbar
     left: 80,
   },
   fontSize: 48, // Large for 300 PPI
