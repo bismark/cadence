@@ -31,6 +31,16 @@ Test with included fixture:
 node dist/index.js compile -i test/fixtures/Advanced-Accessibility-Tests-Media-Overlays-v1.0.0.epub --no-zip
 ```
 
+Inspect a bundle:
+```bash
+node dist/index.js inspect -b path/to/book.bundle
+```
+
+Align an EPUB with an audiobook (parakeet-mlx):
+```bash
+node dist/index.js align -e book.epub -a audiobook.m4b -o book.bundle.zip
+```
+
 ### Player
 
 ```bash
@@ -42,6 +52,13 @@ cd player
 Push a bundle to device:
 ```bash
 adb push book.bundle /sdcard/Download/cadence-bundle
+adb shell am force-stop com.cadence.player
+adb shell am start -n com.cadence.player/.MainActivity
+```
+
+Pi extension helper:
+```bash
+/push-bundle --bundle moby-dick
 ```
 
 ## Architecture
@@ -62,7 +79,7 @@ book.bundle/
   meta.json          # Metadata: profile, title, chapter/page/span counts
   spans.jsonl        # One span per line (audio clip timing + page assignment)
   pages/*.json       # Precomputed text positions and highlight rects per page
-  audio/*.mp3        # Deduplicated audio files
+  audio.opus         # Concatenated audio (Opus)
 ```
 
 ### Player Runtime
@@ -78,6 +95,7 @@ book.bundle/
 - **Canvas rendering (not WebView)**: E-ink CPUs are weak; Canvas is faster and avoids GC pauses
 - **JSONL for spans**: Fast line-by-line parsing, binary search friendly (sorted by time)
 - **Precomputed everything**: Layout, pagination, rect geometry computed at compile time to keep runtime thin
+- **parakeet-mlx offline**: Alignment runs with `HF_HUB_OFFLINE=1` (models must be cached)
 
 ## Device Profiles
 
