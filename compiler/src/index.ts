@@ -207,6 +207,26 @@ async function inspectBundle(bundlePath: string): Promise<void> {
     .sort((a, b) => b[1].untimed - a[1].untimed)
     .slice(0, 5);
 
+  const spanPageMap = new Map<string, Set<number>>();
+  for (const page of pages) {
+    for (const spanRect of page.spanRects) {
+      const entry = spanPageMap.get(spanRect.spanId) ?? new Set<number>();
+      entry.add(page.pageIndex);
+      spanPageMap.set(spanRect.spanId, entry);
+    }
+  }
+
+  const multiPageSpans = [...spanPageMap.entries()]
+    .filter(([, pageSet]) => pageSet.size > 1)
+    .map(([spanId, pageSet]) => ({
+      spanId,
+      pages: [...pageSet].sort((a, b) => a - b),
+    }))
+    .sort((a, b) => b.pages.length - a.pages.length);
+
+  const spansMissingRects = spans.filter((span) => !spanPageMap.has(span.id));
+  const pagesWithNoTextRuns = pages.filter((page) => page.textRuns.length === 0);
+
   const formatMs = (ms: number) => {
     if (!Number.isFinite(ms)) return 'n/a';
     const totalSeconds = Math.floor(ms / 1000);
@@ -250,11 +270,28 @@ async function inspectBundle(bundlePath: string): Promise<void> {
   console.log('----------');
   console.log(`Pages with no timed spans: ${pagesWithNoTimed.length}`);
   console.log(`Pages with no spans: ${pagesWithNoSpans.length}`);
+  console.log(`Pages with no text runs: ${pagesWithNoTextRuns.length}`);
 
   if (topUntimedPages.length > 0) {
     console.log('Top pages by untimed spans:');
     for (const [pageIndex, stats] of topUntimedPages) {
       console.log(`  Page ${pageIndex}: ${stats.untimed} untimed, ${stats.timed} timed`);
+    }
+  }
+
+  console.log('');
+  console.log('Span coverage');
+  console.log('-------------');
+  console.log(`Spans missing rects: ${spansMissingRects.length}`);
+  console.log(`Spans split across pages: ${multiPageSpans.length}`);
+
+  if (multiPageSpans.length > 0) {
+    console.log('Top split spans:');
+    for (const entry of multiPageSpans.slice(0, 10)) {
+      const pagesList = entry.pages.length > 6
+        ? `${entry.pages.slice(0, 6).join(', ')}…`
+        : entry.pages.join(', ');
+      console.log(`  ${entry.spanId} -> [${pagesList}]`);
     }
   }
 }
@@ -722,7 +759,13 @@ async function writeBundleAlignedUncompressed(
   tracks: { path: string; duration: number; title?: string }[],
 ): Promise<void> {
   const { mkdir, writeFile } = await import('node:fs/promises');
+  const { existsSync, rmSync } = await import('node:fs');
   const { concatenateAudioFiles, applyAudioOffsets } = await import('./audio/concat.js');
+
+  // Clean output directory to avoid stale pages
+  if (existsSync(outputDir)) {
+    rmSync(outputDir, { recursive: true, force: true });
+  }
 
   // Create directories
   await mkdir(outputDir, { recursive: true });
