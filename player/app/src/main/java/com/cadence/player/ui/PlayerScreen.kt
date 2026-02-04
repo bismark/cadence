@@ -160,7 +160,16 @@ fun PlayerScreen(
         }
 
         val currentSpan = bundle.findSpanAtTime(positionMs.toDouble())
-        val nextSpan = currentSpan ?: bundle.findNextSpanAfter(positionMs.toDouble())
+        if (currentSpan != null && currentSpan.hasValidTiming()) {
+            activeSpan = currentSpan
+            if (currentSpan.pageIndex != currentPageIndex) {
+                currentPageIndex = currentSpan.pageIndex
+            }
+            audioPlayer.play()
+            return
+        }
+
+        val nextSpan = bundle.findNextSpanAfter(positionMs.toDouble())
         if (nextSpan != null && nextSpan.hasValidTiming()) {
             seekToSpan(nextSpan, play = true)
         } else {
