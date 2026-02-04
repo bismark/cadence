@@ -103,6 +103,7 @@ export async function paginateContent(
     const contentArea = getContentArea(profile);
     const columnWidth = contentArea.width;
     const columnHeight = contentArea.height;
+    const columnGap = profile.margins.left + profile.margins.right;
 
     // Set viewport wide enough for many columns (we'll count them)
     await page.setViewportSize({
@@ -115,7 +116,7 @@ export async function paginateContent(
     const columnCSS = `
       .cadence-content {
         column-width: ${columnWidth}px;
-        column-gap: ${profile.margins.left + profile.margins.right}px;
+        column-gap: ${columnGap}px;
         column-fill: auto;
         height: ${columnHeight}px;
         overflow: visible;
@@ -144,16 +145,25 @@ export async function paginateContent(
         // Total width divided by (column width + gap) gives column count
         return Math.ceil(el.scrollWidth / (columnWidth + columnGap));
       },
-      { columnWidth, columnGap: profile.margins.left + profile.margins.right },
+      { columnWidth, columnGap },
     );
 
     console.log(`      Using CSS columns: ${columnCount} pages`);
+
+    const totalColumnWidth = Math.ceil(columnCount * (columnWidth + columnGap));
+    const viewport = page.viewportSize();
+    if (viewport && totalColumnWidth > viewport.width) {
+      await page.setViewportSize({
+        width: totalColumnWidth,
+        height: profile.viewportHeight,
+      });
+    }
 
     // Extract content for each column/page
     const pages: Page[] = [];
 
     for (let colIndex = 0; colIndex < columnCount; colIndex++) {
-      const colLeft = colIndex * (columnWidth + profile.margins.left + profile.margins.right);
+      const colLeft = colIndex * (columnWidth + columnGap);
 
       const pageData = await page.evaluate(
         ({ colIndex, colLeft, columnWidth, columnHeight, marginTop, marginLeft }) => {
