@@ -78,7 +78,7 @@ async function runParakeet(
 ): Promise<ParakeetResult> {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
-  const { join, basename } = await import('node:path');
+  const { join, parse } = await import('node:path');
 
   // Create temp directory for output
   const tempDir = await mkdtemp(join(tmpdir(), 'parakeet-'));
@@ -110,11 +110,7 @@ async function runParakeet(
 
     // Read the output JSON file
     // parakeet-mlx names output as {filename}.json
-    const audioBasename = basename(audioPath, '.mp3')
-      .replace(/\.m4a$/, '')
-      .replace(/\.m4b$/, '')
-      .replace(/\.wav$/, '')
-      .replace(/\.flac$/, '');
+    const audioBasename = parse(audioPath).name;
     const jsonPath = join(tempDir, `${audioBasename}.json`);
 
     const jsonContent = await readFile(jsonPath, 'utf-8');
