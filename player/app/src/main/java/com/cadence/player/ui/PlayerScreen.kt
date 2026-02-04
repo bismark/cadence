@@ -119,11 +119,40 @@ fun PlayerScreen(
                 val lastPage = bundle.pages.lastOrNull()
                 if (lastPage != null) {
                     currentPageIndex = lastPage.pageIndex
-                    bundle.spans.lastOrNull()?.let { lastSpan ->
+                    bundle.getLastTimedSpan()?.let { lastSpan ->
                         activeSpan = lastSpan
                     }
                 }
             }
+        }
+    }
+
+    fun SpanEntry.hasValidTiming(): Boolean = clipBeginMs >= 0 && clipEndMs > clipBeginMs
+
+    fun seekToSpan(span: SpanEntry, play: Boolean) {
+        activeSpan = span
+        if (span.pageIndex != currentPageIndex) {
+            currentPageIndex = span.pageIndex
+        }
+        audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
+        if (play) {
+            audioPlayer.play()
+        }
+    }
+
+    fun handlePlayPause() {
+        if (isPlaying) {
+            audioPlayer.pause()
+            return
+        }
+
+        val currentSpan = bundle.findSpanAtTime(positionMs.toDouble())
+        val nextSpan = currentSpan ?: bundle.findNextSpanAfter(positionMs.toDouble())
+        if (nextSpan != null && nextSpan.hasValidTiming()) {
+            seekToSpan(nextSpan, play = true)
+        } else {
+            // No valid span to play; keep paused
+            audioPlayer.pause()
         }
     }
 
@@ -148,16 +177,12 @@ fun PlayerScreen(
                     onSpanTap = { spanId ->
                         // Find the span and seek to its position
                         bundle.getSpanById(spanId)?.let { span ->
-                            activeSpan = span
-                            // Seek slightly past clipBegin to avoid boundary precision issues
-                            // (clipBeginMs is Double, but seekTo takes Long - truncation can land us
-                            // in the previous span's range at exact boundaries)
-                            audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
-                            audioPlayer.play()
+                            if (!span.hasValidTiming()) return@let
+                            seekToSpan(span, play = true)
                         }
                     },
                     onBackgroundTap = {
-                        audioPlayer.togglePlayPause()
+                        handlePlayPause()
                     }
                 )
             } ?: run {
@@ -182,15 +207,15 @@ fun PlayerScreen(
                 currentPageIndex = currentPageIndex,
                 totalPages = totalPages,
                 debugMode = debugMode,
-                onPlayPause = { audioPlayer.togglePlayPause() },
+                onPlayPause = { handlePlayPause() },
                 onDebugToggle = { debugMode = !debugMode },
                 onPreviousPage = {
                     if (currentPageIndex > 0) {
                         currentPageIndex--
                         bundle.getPage(currentPageIndex)?.firstSpanId?.let { spanId ->
                             bundle.getSpanById(spanId)?.let { span ->
-                                activeSpan = span
-                                audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
+                                if (!span.hasValidTiming()) return@let
+                                seekToSpan(span, play = false)
                             }
                         }
                     }
@@ -200,8 +225,8 @@ fun PlayerScreen(
                         currentPageIndex++
                         bundle.getPage(currentPageIndex)?.firstSpanId?.let { spanId ->
                             bundle.getSpanById(spanId)?.let { span ->
-                                activeSpan = span
-                                audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
+                                if (!span.hasValidTiming()) return@let
+                                seekToSpan(span, play = false)
                             }
                         }
                     }

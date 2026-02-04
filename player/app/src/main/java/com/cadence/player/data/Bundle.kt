@@ -113,27 +113,43 @@ data class CadenceBundle(
      */
     val audioPath: String get() = "$basePath/audio.opus"
 
+    private val timedSpans: List<SpanEntry> by lazy {
+        spans
+            .filter { it.clipBeginMs >= 0 && it.clipEndMs > it.clipBeginMs }
+            .sortedBy { it.clipBeginMs }
+    }
+
     /**
      * Find the span active at a given timestamp using binary search.
      * Timestamps are global offsets into the single audio.opus file.
-     * Spans are sorted by clipBeginMs, so we binary search for the insertion point
-     * and check if the timestamp falls within that span's range.
+     * Uses only spans with valid timing.
      */
     fun findSpanAtTime(timestampMs: Double): SpanEntry? {
-        if (spans.isEmpty()) return null
-        
-        // Binary search returns index if exact match, or -(insertionPoint + 1) if not found
-        val index = spans.binarySearchBy(timestampMs) { it.clipBeginMs }
-        
-        // Convert to the span that could contain this timestamp
-        // If exact match, use that index; otherwise, use the span before insertion point
+        if (timedSpans.isEmpty()) return null
+
+        val index = timedSpans.binarySearchBy(timestampMs) { it.clipBeginMs }
         val spanIndex = if (index >= 0) index else -(index + 1) - 1
-        
         if (spanIndex < 0) return null
-        
-        val span = spans[spanIndex]
+
+        val span = timedSpans[spanIndex]
         return if (timestampMs < span.clipEndMs) span else null
     }
+
+    /**
+     * Find the next span starting at or after the given timestamp.
+     */
+    fun findNextSpanAfter(timestampMs: Double): SpanEntry? {
+        if (timedSpans.isEmpty()) return null
+
+        val index = timedSpans.binarySearchBy(timestampMs) { it.clipBeginMs }
+        val insertionIndex = if (index >= 0) index else -(index + 1)
+        return timedSpans.getOrNull(insertionIndex)
+    }
+
+    /**
+     * Get the last span with valid timing.
+     */
+    fun getLastTimedSpan(): SpanEntry? = timedSpans.lastOrNull()
 
     /**
      * Get page by index
