@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EPUBContainer } from '../types.js';
 
@@ -24,6 +24,36 @@ export interface ConcatResult {
   offsets: Map<string, AudioOffset>;
   /** Total duration in milliseconds */
   totalDurationMs: number;
+}
+
+const PROBE_CONCURRENCY = Math.max(1, Math.min(4, cpus().length));
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) {
+    return [];
+  }
+
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  const workers = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) {
+        return;
+      }
+
+      results[currentIndex] = await worker(items[currentIndex]!, currentIndex);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
 }
 
 /**
@@ -148,8 +178,12 @@ export async function concatenateAudio(
       tempFiles.push(tempPath);
     }
 
-    // Probe durations in parallel
-    const durationsMs = await Promise.all(tempFiles.map((filePath) => getAudioDuration(filePath)));
+    // Probe durations with bounded concurrency
+    const durationsMs = await mapWithConcurrency(
+      tempFiles,
+      PROBE_CONCURRENCY,
+      (filePath) => getAudioDuration(filePath),
+    );
 
     for (let i = 0; i < audioFiles.length; i++) {
       const audioPath = audioFiles[i]!;
@@ -239,9 +273,11 @@ export async function concatenateAudioFiles(
 
     console.log(`  Processing ${audioFiles.length} audio files...`);
 
-    // Get durations for each audio file in parallel
-    const durationsMs = await Promise.all(
-      audioFiles.map((audioPath) => getAudioDuration(audioPath)),
+    // Get durations for each audio file with bounded concurrency
+    const durationsMs = await mapWithConcurrency(
+      audioFiles,
+      PROBE_CONCURRENCY,
+      (audioPath) => getAudioDuration(audioPath),
     );
 
     for (let i = 0; i < audioFiles.length; i++) {
