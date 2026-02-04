@@ -26,6 +26,9 @@ player/captures/
 # Claude
 .claude/
 
+# Vendor (reference copies, not part of build)
+vendor/
+
 # Misc
 *.log
 *.tmp
