@@ -13,7 +13,9 @@
     "compile": "tsx src/index.ts compile",
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
-    "format": "biome format --write src"
+    "format": "biome format --write src",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "archiver": "^7.0.0",
@@ -31,7 +33,8 @@
     "@types/node": "^22.10.0",
     "@types/yauzl": "^2.10.3",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=20.0.0"
