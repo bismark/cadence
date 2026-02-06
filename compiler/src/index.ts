@@ -29,6 +29,7 @@ import {
   initBrowser,
   paginateChapters,
 } from './layout/paginate.js';
+import { splitSpansAcrossPages } from './layout/split-spans-across-pages.js';
 import { loadBundle, previewAtTimestamp } from './preview.js';
 import type { BundleMeta, DeviceProfile, NormalizedContent, Span, TocEntry } from './types.js';
 import { logValidationResult, validateCompilationResult } from './validation.js';
@@ -288,9 +289,8 @@ async function inspectBundle(bundlePath: string): Promise<void> {
   if (multiPageSpans.length > 0) {
     console.log('Top split spans:');
     for (const entry of multiPageSpans.slice(0, 10)) {
-      const pagesList = entry.pages.length > 6
-        ? `${entry.pages.slice(0, 6).join(', ')}…`
-        : entry.pages.join(', ');
+      const pagesList =
+        entry.pages.length > 6 ? `${entry.pages.slice(0, 6).join(', ')}…` : entry.pages.join(', ');
       console.log(`  ${entry.spanId} -> [${pagesList}]`);
     }
   }
@@ -538,8 +538,18 @@ async function alignEPUB(
       console.log('Step 5: Paginating content...');
       await initBrowser();
 
-      const pages = await paginateChapters(normalizedContents, profile);
-      console.log(`  Total pages: ${pages.length}`);
+      const paginatedPages = await paginateChapters(normalizedContents, profile);
+      console.log(`  Total pages: ${paginatedPages.length}`);
+
+      const splitResult = splitSpansAcrossPages(allSpans, paginatedPages);
+      const spans = splitResult.spans;
+      const pages = splitResult.pages;
+
+      if (splitResult.splitSpanCount > 0) {
+        console.log(
+          `  Split ${splitResult.splitSpanCount} span(s) across page boundaries (+${splitResult.createdSpanCount} span entries)`,
+        );
+      }
 
       // Step 6: Assign spans to pages
       console.log('Step 6: Mapping spans to pages...');
@@ -581,25 +591,17 @@ async function alignEPUB(
         profile: profile.name,
         title: opf.title,
         pages: pages.length,
-        spans: allSpans.length,
+        spans: spans.length,
       };
 
       if (createZip) {
-        await writeBundleAligned(
-          resolvedOutput,
-          meta,
-          allSpans,
-          pages,
-          spanToPageIndex,
-          toc,
-          tracks,
-        );
+        await writeBundleAligned(resolvedOutput, meta, spans, pages, spanToPageIndex, toc, tracks);
       } else {
         const uncompressedDir = resolvedOutput.replace(/\.zip$/, '');
         await writeBundleAlignedUncompressed(
           uncompressedDir,
           meta,
-          allSpans,
+          spans,
           pages,
           spanToPageIndex,
           toc,
@@ -881,8 +883,18 @@ async function compileEPUB(
     console.log('Step 5: Paginating content...');
     await initBrowser();
 
-    const pages = await paginateChapters(normalizedContents, profile);
-    console.log(`  Total pages: ${pages.length}`);
+    const paginatedPages = await paginateChapters(normalizedContents, profile);
+    console.log(`  Total pages: ${paginatedPages.length}`);
+
+    const splitResult = splitSpansAcrossPages(allSpans, paginatedPages);
+    const spans = splitResult.spans;
+    const pages = splitResult.pages;
+
+    if (splitResult.splitSpanCount > 0) {
+      console.log(
+        `  Split ${splitResult.splitSpanCount} span(s) across page boundaries (+${splitResult.createdSpanCount} span entries)`,
+      );
+    }
 
     // Step 6: Assign spans to pages and build ToC
     console.log('Step 6: Mapping spans to pages...');
@@ -928,14 +940,14 @@ async function compileEPUB(
       profile: profile.name,
       title: opf.title,
       pages: pages.length,
-      spans: allSpans.length,
+      spans: spans.length,
     };
 
     if (createZip) {
       await writeBundle(
         resolvedOutput,
         meta,
-        allSpans,
+        spans,
         pages,
         spanToPageIndex,
         toc,
@@ -947,7 +959,7 @@ async function compileEPUB(
       await writeBundleUncompressed(
         uncompressedDir,
         meta,
-        allSpans,
+        spans,
         pages,
         spanToPageIndex,
         toc,
@@ -958,7 +970,7 @@ async function compileEPUB(
 
     // Step 9: Validate output
     console.log('Step 9: Validating output...');
-    const validationResult = validateCompilationResult(allSpans, pages, spanToPageIndex, profile);
+    const validationResult = validateCompilationResult(spans, pages, spanToPageIndex, profile);
     logValidationResult(validationResult);
 
     console.log('');
