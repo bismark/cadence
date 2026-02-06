@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import com.cadence.player.perf.PerfLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,9 +36,21 @@ class AudioPlayer(context: Context) {
                 // Use playWhenReady instead of isPlaying to avoid brief false blips during seeks.
                 // isPlaying can be momentarily false during seek/buffer even when user intends to play.
                 _isPlaying.value = exoPlayer.playWhenReady
+
+                if (PerfLog.enabled) {
+                    PerfLog.d(
+                        "audio isPlayingChanged raw=$isPlaying playWhenReady=${exoPlayer.playWhenReady} posMs=${exoPlayer.currentPosition}"
+                    )
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (PerfLog.enabled) {
+                    PerfLog.d(
+                        "audio state=${playbackStateName(playbackState)} posMs=${exoPlayer.currentPosition} bufferedMs=${exoPlayer.bufferedPosition}"
+                    )
+                }
+
                 when (playbackState) {
                     Player.STATE_READY -> {
                         _durationMs.value = exoPlayer.duration
@@ -61,6 +74,11 @@ class AudioPlayer(context: Context) {
             val mediaItem = MediaItem.fromUri(Uri.fromFile(file))
             exoPlayer.setMediaItem(mediaItem)
             exoPlayer.prepare()
+            if (PerfLog.enabled) {
+                PerfLog.d("audio load file=$filePath size=${file.length()} bytes")
+            }
+        } else if (PerfLog.enabled) {
+            PerfLog.w("audio file missing path=$filePath")
         }
     }
 
@@ -68,6 +86,9 @@ class AudioPlayer(context: Context) {
      * Start or resume playback
      */
     fun play() {
+        if (PerfLog.enabled) {
+            PerfLog.d("audio play posMs=${exoPlayer.currentPosition}")
+        }
         exoPlayer.play()
     }
 
@@ -75,6 +96,9 @@ class AudioPlayer(context: Context) {
      * Pause playback
      */
     fun pause() {
+        if (PerfLog.enabled) {
+            PerfLog.d("audio pause posMs=${exoPlayer.currentPosition}")
+        }
         exoPlayer.pause()
     }
 
@@ -93,6 +117,9 @@ class AudioPlayer(context: Context) {
      * Seek to a position in milliseconds
      */
     fun seekTo(positionMs: Long) {
+        if (PerfLog.enabled) {
+            PerfLog.d("audio seekTo posMs=$positionMs")
+        }
         exoPlayer.seekTo(positionMs)
     }
 
@@ -114,6 +141,19 @@ class AudioPlayer(context: Context) {
      * Release player resources
      */
     fun release() {
+        if (PerfLog.enabled) {
+            PerfLog.d("audio release")
+        }
         exoPlayer.release()
+    }
+
+    private fun playbackStateName(state: Int): String {
+        return when (state) {
+            Player.STATE_IDLE -> "IDLE"
+            Player.STATE_BUFFERING -> "BUFFERING"
+            Player.STATE_READY -> "READY"
+            Player.STATE_ENDED -> "ENDED"
+            else -> "UNKNOWN($state)"
+        }
     }
 }

@@ -20,7 +20,10 @@ import com.cadence.player.audio.AudioPlayer
 import com.cadence.player.data.CadenceBundle
 import com.cadence.player.data.PlaybackPreferences
 import com.cadence.player.data.SpanEntry
+import com.cadence.player.perf.PerfLog
+import com.cadence.player.perf.RollingTimingStats
 import kotlinx.coroutines.delay
+import kotlin.math.abs
 
 /**
  * Main player screen - simplified with single audio file
@@ -44,11 +47,18 @@ fun PlayerScreen(
     var positionMs by remember { mutableLongStateOf(0L) }
     var debugMode by remember { mutableStateOf(false) }
 
+    // Debug-only instrumentation
+    val pollLoopStats = remember { RollingTimingStats("poll-loop", reportEvery = 200, slowThresholdMs = 6.0) }
+    val spanLookupStats = remember { RollingTimingStats("span-lookup", reportEvery = 200, slowThresholdMs = 1.5) }
+    val savePositionStats = remember { RollingTimingStats("save-position", reportEvery = 20, slowThresholdMs = 2.0) }
+
     val currentPage = bundle.getPage(currentPageIndex)
     val totalPages = bundle.pages.size
 
     // Load audio and restore saved position on startup
     LaunchedEffect(Unit) {
+        val startupStartNs = if (PerfLog.enabled) System.nanoTime() else 0L
+
         audioPlayer.loadFile(bundle.audioPath)
 
         // Restore saved position
@@ -62,24 +72,54 @@ fun PlayerScreen(
                 currentPageIndex = span.pageIndex
             }
         }
+
+        if (PerfLog.enabled) {
+            PerfLog.d(
+                "player startup restore=${PerfLog.formatNs(System.nanoTime() - startupStartNs)}ms savedPositionMs=$savedPosition"
+            )
+        }
     }
 
     // Position update loop - simple polling
     var saveCounter by remember { mutableIntStateOf(0) }
     LaunchedEffect(isPlaying) {
+        var loopsSinceLog = 0
+        var lookupsSinceLog = 0
+        var spanSwitchesSinceLog = 0
+        var pageSwitchesSinceLog = 0
+        var uiPositionTicks = 0
+
         while (isPlaying) {
-            positionMs = audioPlayer.getCurrentPositionMs()
+            val pollStartNs = if (PerfLog.enabled) System.nanoTime() else 0L
+            val polledPositionMs = audioPlayer.getCurrentPositionMs()
+
+            // Throttle UI time updates to ~1Hz to avoid triggering full-screen recomposition at 20Hz.
+            // Span/page sync still runs at 20Hz based on polledPositionMs.
+            uiPositionTicks++
+            if (uiPositionTicks >= 20 || abs(polledPositionMs - positionMs) >= 1000L) {
+                positionMs = polledPositionMs
+                uiPositionTicks = 0
+            }
 
             // Only update activeSpan when position leaves current span's range
             // This prevents race conditions when user taps (tap sets activeSpan,
             // but position hasn't caught up yet - we don't want to overwrite)
             val currentSpan = activeSpan
             if (currentSpan == null ||
-                positionMs < currentSpan.clipBeginMs ||
-                positionMs >= currentSpan.clipEndMs) {
-                bundle.findSpanAtTime(positionMs.toDouble())?.let { span ->
+                polledPositionMs < currentSpan.clipBeginMs ||
+                polledPositionMs >= currentSpan.clipEndMs) {
+                lookupsSinceLog++
+                val resolvedSpan = spanLookupStats.measure {
+                    bundle.findSpanAtTime(polledPositionMs.toDouble())
+                }
+
+                resolvedSpan?.let { span ->
+                    if (currentSpan?.id != span.id) {
+                        spanSwitchesSinceLog++
+                    }
                     activeSpan = span
                     if (span.pageIndex != currentPageIndex) {
+                        pageSwitchesSinceLog++
                         currentPageIndex = span.pageIndex
                     }
                 }
@@ -88,8 +128,24 @@ fun PlayerScreen(
             // Save position every ~5 seconds (100 iterations * 50ms)
             saveCounter++
             if (saveCounter >= 100) {
-                playbackPrefs.savePosition(bookId, positionMs)
+                savePositionStats.measure {
+                    playbackPrefs.savePosition(bookId, polledPositionMs)
+                }
                 saveCounter = 0
+            }
+
+            if (PerfLog.enabled) {
+                pollLoopStats.record(System.nanoTime() - pollStartNs)
+                loopsSinceLog++
+                if (loopsSinceLog >= 200) {
+                    PerfLog.d(
+                        "poll summary loops=$loopsSinceLog lookups=$lookupsSinceLog spanSwitches=$spanSwitchesSinceLog pageSwitches=$pageSwitchesSinceLog posMs=$polledPositionMs"
+                    )
+                    loopsSinceLog = 0
+                    lookupsSinceLog = 0
+                    spanSwitchesSinceLog = 0
+                    pageSwitchesSinceLog = 0
+                }
             }
 
             delay(50)  // Update at ~20Hz
@@ -99,7 +155,9 @@ fun PlayerScreen(
     // Save position when leaving the screen
     DisposableEffect(Unit) {
         onDispose {
-            playbackPrefs.savePosition(bookId, audioPlayer.getCurrentPositionMs())
+            savePositionStats.measure {
+                playbackPrefs.savePosition(bookId, audioPlayer.getCurrentPositionMs())
+            }
             audioPlayer.release()
         }
     }
@@ -107,7 +165,15 @@ fun PlayerScreen(
     // Collect player state
     LaunchedEffect(Unit) {
         audioPlayer.isPlaying.collect { playing ->
+            if (PerfLog.enabled && isPlaying != playing) {
+                PerfLog.d("isPlaying changed=$playing posMs=$positionMs")
+            }
             isPlaying = playing
+
+            // Snap displayed time when playback stops (poll loop throttles to ~1Hz).
+            if (!playing) {
+                positionMs = audioPlayer.getCurrentPositionMs()
+            }
         }
     }
 
@@ -115,6 +181,10 @@ fun PlayerScreen(
     LaunchedEffect(Unit) {
         audioPlayer.playbackEnded.collect { ended ->
             if (ended) {
+                if (PerfLog.enabled) {
+                    PerfLog.d("playback ended at posMs=$positionMs")
+                }
+
                 // Go to last page and last span when playback completes
                 val lastPage = bundle.pages.lastOrNull()
                 if (lastPage != null) {
@@ -159,7 +229,10 @@ fun PlayerScreen(
             return
         }
 
-        val currentSpan = bundle.findSpanAtTime(positionMs.toDouble())
+        val playbackPositionMs = audioPlayer.getCurrentPositionMs()
+        positionMs = playbackPositionMs
+
+        val currentSpan = bundle.findSpanAtTime(playbackPositionMs.toDouble())
         if (currentSpan != null && currentSpan.hasValidTiming()) {
             activeSpan = currentSpan
             if (currentSpan.pageIndex != currentPageIndex) {
@@ -169,7 +242,7 @@ fun PlayerScreen(
             return
         }
 
-        val nextSpan = bundle.findNextSpanAfter(positionMs.toDouble())
+        val nextSpan = bundle.findNextSpanAfter(playbackPositionMs.toDouble())
         if (nextSpan != null && nextSpan.hasValidTiming()) {
             seekToSpan(nextSpan, play = true)
         } else {
@@ -199,8 +272,9 @@ fun PlayerScreen(
                     onSpanTap = { spanId ->
                         // Find the span and seek to its position
                         bundle.getSpanById(spanId)?.let { span ->
-                            if (!span.hasValidTiming()) return@let
-                            seekToSpan(span, play = true)
+                            if (span.hasValidTiming()) {
+                                seekToSpan(span, play = true)
+                            }
                         }
                     },
                     onBackgroundTap = {

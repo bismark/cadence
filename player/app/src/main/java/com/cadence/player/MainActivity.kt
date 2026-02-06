@@ -26,12 +26,15 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.cadence.player.data.BundleLoader
 import com.cadence.player.data.CadenceBundle
+import com.cadence.player.perf.PerfLog
 import com.cadence.player.ui.PlayerScreen
 import java.io.File
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        PerfLog.initialize(applicationContext)
 
         // Enable fullscreen immersive mode - hide system bars
         // This is important for e-ink devices and to match the compiler's viewport assumptions
@@ -56,6 +59,7 @@ fun CadenceApp() {
     var isLoading by remember { mutableStateOf(true) }
     var hasPermission by remember { mutableStateOf(false) }
     var permissionRequested by remember { mutableStateOf(false) }
+    var bundleLoadStarted by remember { mutableStateOf(false) }
 
     // Check if we have storage permission
     fun checkStoragePermission(): Boolean {
@@ -73,6 +77,10 @@ fun CadenceApp() {
     val legacyPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
+        if (PerfLog.enabled) {
+            PerfLog.d("legacy permission result granted=$granted")
+        }
+
         hasPermission = granted
         if (!granted) {
             error = "Storage permission is required to load bundles"
@@ -84,7 +92,12 @@ fun CadenceApp() {
     val manageStorageLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
-        hasPermission = Environment.isExternalStorageManager()
+        val granted = Environment.isExternalStorageManager()
+        if (PerfLog.enabled) {
+            PerfLog.d("manage storage permission result granted=$granted")
+        }
+
+        hasPermission = granted
         if (!hasPermission) {
             error = "Storage permission is required to load bundles.\n\nPlease grant 'All files access' permission."
             isLoading = false
@@ -93,16 +106,27 @@ fun CadenceApp() {
 
     // Request permission on first launch
     LaunchedEffect(Unit) {
-        if (checkStoragePermission()) {
+        val alreadyGranted = checkStoragePermission()
+        if (PerfLog.enabled) {
+            PerfLog.d("permission check granted=$alreadyGranted requested=$permissionRequested")
+        }
+
+        if (alreadyGranted) {
             hasPermission = true
         } else if (!permissionRequested) {
             permissionRequested = true
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (PerfLog.enabled) {
+                    PerfLog.d("launching MANAGE_EXTERNAL_STORAGE settings")
+                }
                 val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
                     data = Uri.parse("package:${context.packageName}")
                 }
                 manageStorageLauncher.launch(intent)
             } else {
+                if (PerfLog.enabled) {
+                    PerfLog.d("launching READ_EXTERNAL_STORAGE permission request")
+                }
                 legacyPermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
             }
         }
@@ -110,7 +134,12 @@ fun CadenceApp() {
 
     // Try to load bundle once we have permission
     LaunchedEffect(hasPermission) {
-        if (!hasPermission) return@LaunchedEffect
+        if (!hasPermission || bundleLoadStarted) return@LaunchedEffect
+        bundleLoadStarted = true
+
+        if (PerfLog.enabled) {
+            PerfLog.d("bundle load effect start hasPermission=$hasPermission")
+        }
 
         try {
             // Look for bundle in standard locations
@@ -132,6 +161,12 @@ fun CadenceApp() {
                     bundleFile.exists() && bundleFile.isDirectory && File(bundleFile, "meta.json").exists()
                 val isZipBundle =
                     bundleFile.exists() && bundleFile.isFile && bundleFile.extension.lowercase() == "zip"
+
+                if (PerfLog.enabled) {
+                    PerfLog.d(
+                        "bundle path check path=$path exists=${bundleFile.exists()} dir=$isDirectoryBundle zip=$isZipBundle"
+                    )
+                }
 
                 if (isDirectoryBundle || isZipBundle) {
                     loadedBundle = BundleLoader.loadBundle(context, path)
