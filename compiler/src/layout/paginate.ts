@@ -121,6 +121,11 @@ export async function paginateContent(
         height: ${columnHeight}px;
         overflow: visible;
       }
+      /* Force detected chapter headings onto a fresh page */
+      .cadence-chapter-break {
+        break-before: column;
+        -webkit-column-break-before: always;
+      }
       /* Prevent breaks inside spans; allow paragraph breaks */
       [data-span-id] {
         break-inside: avoid;
@@ -138,6 +143,54 @@ export async function paginateContent(
     });
 
     await page.evaluate(() => document.fonts.ready);
+
+    const chapterBreakCount = await page.evaluate(() => {
+      const root = document.querySelector('.cadence-content');
+      if (!root) {
+        return 0;
+      }
+
+      const chapterHeadingPattern = /^(chapter|book|part)\b/i;
+      const chapterTokenPattern = /\bchapter\b/i;
+      const headings = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6')) as HTMLElement[];
+
+      let inserted = 0;
+
+      for (const heading of headings) {
+        const text = heading.textContent?.trim() ?? '';
+        const id = heading.id ?? '';
+        const className = heading.className ?? '';
+        const epubType = heading.getAttribute('epub:type') ?? '';
+
+        const isChapterHeading =
+          chapterHeadingPattern.test(text) ||
+          chapterTokenPattern.test(id) ||
+          chapterTokenPattern.test(className) ||
+          chapterTokenPattern.test(epubType);
+
+        if (!isChapterHeading) {
+          continue;
+        }
+
+        const precedingRange = document.createRange();
+        precedingRange.setStart(root, 0);
+        precedingRange.setEndBefore(heading);
+        const hasPriorText = precedingRange.toString().trim().length > 0;
+
+        if (!hasPriorText) {
+          continue;
+        }
+
+        heading.classList.add('cadence-chapter-break');
+        inserted++;
+      }
+
+      return inserted;
+    });
+
+    if (chapterBreakCount > 0) {
+      console.log(`      Inserted ${chapterBreakCount} chapter page break(s)`);
+    }
 
     // Count how many columns were created
     const columnCount = await page.evaluate(
