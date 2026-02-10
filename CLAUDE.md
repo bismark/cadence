@@ -123,6 +123,11 @@ book.bundle/
 - **Precomputed everything**: Layout, pagination, rect geometry computed at compile time to keep runtime thin
 - **parakeet-mlx offline**: Alignment runs with `HF_HUB_OFFLINE=1` (models must be cached)
 
+### Current POC Rules (explicitly prioritized)
+
+- **Player is a dumb painter**: Keep layout/typography logic in the compiler. The player should only paint precomputed geometry and handle input/playback state.
+- **No versioning/back-compat work unless explicitly requested**: This is early POC mode; do not spend time on migration layers, schema versioning strategy, or backward compatibility planning until the user asks.
+
 ## Device Profiles
 
 Profiles define viewport size, margins, font settings. Currently supports `supernote-manta-a5x2`. Add new profiles in `compiler/src/device-profiles/profiles.ts`.
