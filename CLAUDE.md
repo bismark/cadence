@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Cadence is a two-part system for reading EPUB3 books with synchronized audio and text highlighting on e-ink devices (specifically the Supernote Manta). It consists of:
 
-1. **Compiler** (TypeScript/Node.js) - Transforms EPUB3 books with Media Overlays into optimized bundles
+1. **Compiler** (TypeScript/Node.js) - Builds synchronized bundles either from EPUB3 Media Overlays (`compile`) or by aligning a plain EPUB to external audio (`align`)
 2. **Player** (Kotlin/Android) - Plays bundles with synchronized audio and text highlighting
 
 ## Build Commands
@@ -29,6 +29,11 @@ node dist/index.js compile -i path/to/book.epub           # ZIP output
 Test with included fixture:
 ```bash
 node dist/index.js compile -i test/fixtures/Advanced-Accessibility-Tests-Media-Overlays-v1.0.0.epub --no-zip
+```
+
+Align fixture without embedded Media Overlays (Moby Dick):
+```bash
+node dist/index.js align -e test/fixtures/moby-dick.epub -a test/fixtures/mobydick_001_002_melville.mp3 --transcription test/fixtures/mobydick-transcription.json --no-zip -o test/fixtures/moby-dick-aligned.bundle.zip
 ```
 
 Inspect a bundle:
@@ -60,6 +65,27 @@ Pi extension helper:
 ```bash
 /push-bundle --bundle moby-dick
 ```
+
+`/push-bundle` auto-starts an emulator when none is connected (defaults to AVD `Supernote_Manta_A5_X2`, override via `--avd <name>` or `CADENCE_AVD`).
+
+## Agent Workflow Requirements
+
+### Required verification for player changes
+
+If you modify anything under `player/` (code, Gradle files, resources, or docs), run this before finishing:
+
+```bash
+cd player
+./scripts/verify.sh
+```
+
+This command runs all required player checks:
+- `:app:compileDebugKotlin`
+- `detekt`
+- `:app:lintDebug`
+- `buildHealth`
+
+Do not skip these checks unless the user explicitly asks to skip verification.
 
 ## Architecture
 
