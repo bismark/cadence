@@ -70,6 +70,7 @@ export interface TextRun {
   y: number;
   width: number;
   height: number;
+  baselineY: number; // Baseline position in page-local coordinates
   spanId?: string; // Present if this run is part of a synchronized span
   style: TextStyle;
 }

@@ -54,10 +54,11 @@ data class TextStyle(
 @Serializable
 data class TextRun(
     val text: String,
-    val x: Int,
-    val y: Int,
-    val width: Int,
-    val height: Int,
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float,
+    val baselineY: Float,
     val spanId: String? = null,
     val style: TextStyle
 )
@@ -67,10 +68,10 @@ data class TextRun(
  */
 @Serializable
 data class Rect(
-    val x: Int,
-    val y: Int,
-    val width: Int,
-    val height: Int
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float
 )
 
 /**

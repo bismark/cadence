@@ -48,6 +48,7 @@ private class NotoSerifFonts(context: Context) {
 }
 
 private data class PaintKey(
+    val fontFamily: String,
     val fontSize: Float,
     val fontWeight: Int,
     val fontStyle: String,
@@ -57,13 +58,15 @@ private data class PaintKey(
 /**
  * Reuses android.graphics.Paint objects to avoid allocating one per text run per frame.
  */
-private class TextPaintCache(private val fonts: NotoSerifFonts) {
+private class TextPaintCache(private val serifFonts: NotoSerifFonts) {
     private val cache = mutableMapOf<PaintKey, android.graphics.Paint>()
 
     fun get(style: TextStyle): android.graphics.Paint {
         val inkGray = style.inkGray.coerceIn(0, 255)
+        val normalizedFamily = style.fontFamily.trim().lowercase()
 
         val key = PaintKey(
+            fontFamily = normalizedFamily,
             fontSize = style.fontSize,
             fontWeight = style.fontWeight,
             fontStyle = style.fontStyle,
@@ -74,9 +77,31 @@ private class TextPaintCache(private val fonts: NotoSerifFonts) {
             android.graphics.Paint().apply {
                 color = android.graphics.Color.rgb(inkGray, inkGray, inkGray)
                 textSize = style.fontSize
-                typeface = fonts.get(style.fontWeight, style.fontStyle)
+                typeface = resolveTypeface(style, normalizedFamily)
                 isAntiAlias = true
+                isSubpixelText = true
+                isLinearText = true
             }
+        }
+    }
+
+    private fun resolveTypeface(style: TextStyle, normalizedFamily: String): Typeface {
+        val isBold = style.fontWeight >= 700
+        val isItalic = style.fontStyle == "italic"
+        val androidStyle = when {
+            isBold && isItalic -> Typeface.BOLD_ITALIC
+            isBold -> Typeface.BOLD
+            isItalic -> Typeface.ITALIC
+            else -> Typeface.NORMAL
+        }
+
+        return when {
+            normalizedFamily.contains("mono") -> Typeface.create(Typeface.MONOSPACE, androidStyle)
+            normalizedFamily.contains("sans") -> Typeface.create(Typeface.SANS_SERIF, androidStyle)
+            normalizedFamily.contains("noto serif") || normalizedFamily.contains("serif") ->
+                serifFonts.get(style.fontWeight, style.fontStyle)
+
+            else -> Typeface.create(Typeface.SERIF, androidStyle)
         }
     }
 }
@@ -252,7 +277,7 @@ fun PageRenderer(
                         style = Stroke(width = 1f)
                     )
                     // Baseline
-                    val baseline = textRun.y + marginTop + textRun.height * 0.8f
+                    val baseline = textRun.baselineY + marginTop
                     drawLine(
                         color = Color.Blue,
                         start = Offset(textRun.x + marginLeft, baseline),
@@ -283,13 +308,10 @@ private fun DrawScope.drawTextRun(
 ) {
     val paint = paintCache.get(textRun.style)
 
-    // Draw text with margin offsets applied
-    // Note: Canvas drawText uses baseline, so we need to adjust Y
-    val baseline = textRun.y + marginTop + textRun.height * 0.8f  // Approximate baseline
     drawContext.canvas.nativeCanvas.drawText(
         textRun.text,
         textRun.x + marginLeft,
-        baseline,
+        textRun.baselineY + marginTop,
         paint
     )
 }

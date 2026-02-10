@@ -185,6 +185,7 @@ function tagNodesWithSentences(
   sentences: string[],
   state: TaggingState,
   taggedSentences: Set<number>,
+  sentenceIndicesToTag: Set<number> | null,
 ): { nodes: ChildNode[]; state: TaggingState } {
   const result: ChildNode[] = [];
 
@@ -196,7 +197,14 @@ function tagNodesWithSentences(
     }
 
     if (isTextNode(node)) {
-      const tagged = tagTextNode(chapterId, node, sentences, state, taggedSentences);
+      const tagged = tagTextNode(
+        chapterId,
+        node,
+        sentences,
+        state,
+        taggedSentences,
+        sentenceIndicesToTag,
+      );
       result.push(...tagged.nodes);
       state = tagged.state;
     } else if (isElement(node)) {
@@ -211,6 +219,7 @@ function tagNodesWithSentences(
           sentences,
           state,
           taggedSentences,
+          sentenceIndicesToTag,
         );
         newElement.childNodes = tagged.nodes;
         result.push(newElement);
@@ -225,6 +234,7 @@ function tagNodesWithSentences(
           sentences,
           state,
           taggedSentences,
+          sentenceIndicesToTag,
         );
         newElement.childNodes = tagged.nodes;
         result.push(newElement);
@@ -248,6 +258,7 @@ function tagTextNode(
   sentences: string[],
   state: TaggingState,
   taggedSentences: Set<number>,
+  sentenceIndicesToTag: Set<number> | null,
 ): { nodes: ChildNode[]; state: TaggingState } {
   const result: ChildNode[] = [];
   const text = node.value;
@@ -262,10 +273,13 @@ function tagTextNode(
     const sentenceStart = remainingText.indexOf(remainingSentence[0]);
 
     if (sentenceStart === -1) {
-      // Sentence doesn't continue here - output remaining text untagged
+      // Sentence doesn't continue here - output remaining text untagged.
+      // Mark node as fully consumed to avoid appending the same trailing
+      // substring again in the post-loop remainingText flush.
       if (remainingText) {
         result.push(createTextNode(remainingText));
       }
+      textPos = text.length;
       break;
     }
 
@@ -280,15 +294,22 @@ function tagTextNode(
     if (availableText.length >= remainingSentence.length) {
       // Full remaining sentence is here
       const sentenceText = remainingSentence;
-      const spanId = `${chapterId}-sentence${state.sentenceIndex}`;
+      const shouldTagSentence =
+        sentenceIndicesToTag === null || sentenceIndicesToTag.has(state.sentenceIndex);
 
-      if (!taggedSentences.has(state.sentenceIndex)) {
-        // Wrap in span
-        const span = createSpanElement(spanId, [createTextNode(sentenceText)]);
-        result.push(span);
-        taggedSentences.add(state.sentenceIndex);
+      if (shouldTagSentence) {
+        const spanId = `${chapterId}-sentence${state.sentenceIndex}`;
+
+        if (!taggedSentences.has(state.sentenceIndex)) {
+          // Wrap in span
+          const span = createSpanElement(spanId, [createTextNode(sentenceText)]);
+          result.push(span);
+          taggedSentences.add(state.sentenceIndex);
+        } else {
+          // Already tagged earlier (sentence split across nodes)
+          result.push(createTextNode(sentenceText));
+        }
       } else {
-        // Already tagged earlier (sentence split across nodes)
         result.push(createTextNode(sentenceText));
       }
 
@@ -299,12 +320,19 @@ function tagTextNode(
       };
     } else {
       // Only partial sentence here
-      const spanId = `${chapterId}-sentence${state.sentenceIndex}`;
+      const shouldTagSentence =
+        sentenceIndicesToTag === null || sentenceIndicesToTag.has(state.sentenceIndex);
 
-      if (!taggedSentences.has(state.sentenceIndex)) {
-        const span = createSpanElement(spanId, [createTextNode(availableText)]);
-        result.push(span);
-        taggedSentences.add(state.sentenceIndex);
+      if (shouldTagSentence) {
+        const spanId = `${chapterId}-sentence${state.sentenceIndex}`;
+
+        if (!taggedSentences.has(state.sentenceIndex)) {
+          const span = createSpanElement(spanId, [createTextNode(availableText)]);
+          result.push(span);
+          taggedSentences.add(state.sentenceIndex);
+        } else {
+          result.push(createTextNode(availableText));
+        }
       } else {
         result.push(createTextNode(availableText));
       }
@@ -313,6 +341,7 @@ function tagTextNode(
         sentenceIndex: state.sentenceIndex,
         sentenceProgress: state.sentenceProgress + availableText.length,
       };
+      textPos += sentenceStart + availableText.length;
       break; // Move to next node
     }
   }
@@ -339,6 +368,7 @@ function tagTextNode(
 export function tagSentencesInXhtml(
   xhtml: string,
   chapterId: string,
+  sentenceIndicesToTag?: Set<number>,
 ): { html: string; sentences: string[] } {
   const document = parse5.parse(xhtml);
   const body = findBody(document);
@@ -364,6 +394,7 @@ export function tagSentencesInXhtml(
     sentences,
     state,
     taggedSentences,
+    sentenceIndicesToTag ?? null,
   );
 
   body.childNodes = tagged.nodes;

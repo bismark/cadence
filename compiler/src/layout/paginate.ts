@@ -298,11 +298,6 @@ export async function paginateContent(
         height: ${columnHeight}px;
         overflow: visible;
       }
-      /* Force detected chapter headings onto a fresh page */
-      .cadence-chapter-break {
-        break-before: column;
-        -webkit-column-break-before: always;
-      }
       /* Prevent breaks inside spans; allow paragraph breaks */
       [data-span-id] {
         break-inside: avoid;
@@ -327,53 +322,8 @@ export async function paginateContent(
 
     await page.evaluate(() => document.fonts.ready);
 
-    const chapterBreakCount = await page.evaluate(() => {
-      const root = document.querySelector('.cadence-content');
-      if (!root) {
-        return 0;
-      }
-
-      const chapterHeadingPattern = /^(chapter|book|part)\b/i;
-      const chapterTokenPattern = /\bchapter\b/i;
-      const headings = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6')) as HTMLElement[];
-
-      let inserted = 0;
-
-      for (const heading of headings) {
-        const text = heading.textContent?.trim() ?? '';
-        const id = heading.id ?? '';
-        const className = heading.className ?? '';
-        const epubType = heading.getAttribute('epub:type') ?? '';
-
-        const isChapterHeading =
-          chapterHeadingPattern.test(text) ||
-          chapterTokenPattern.test(id) ||
-          chapterTokenPattern.test(className) ||
-          chapterTokenPattern.test(epubType);
-
-        if (!isChapterHeading) {
-          continue;
-        }
-
-        const precedingRange = document.createRange();
-        precedingRange.setStart(root, 0);
-        precedingRange.setEndBefore(heading);
-        const hasPriorText = precedingRange.toString().trim().length > 0;
-
-        if (!hasPriorText) {
-          continue;
-        }
-
-        heading.classList.add('cadence-chapter-break');
-        inserted++;
-      }
-
-      return inserted;
-    });
-
-    if (chapterBreakCount > 0) {
-      console.log(`      Inserted ${chapterBreakCount} chapter page break(s)`);
-    }
+    // Rely on source-authored break hints (break-before/after, page-break-*)
+    // instead of injecting heuristic chapter breaks.
 
     // Count how many columns were created
     const columnCount = await page.evaluate(
@@ -411,6 +361,7 @@ export async function paginateContent(
             y: number;
             width: number;
             height: number;
+            baselineY: number;
             spanId?: string;
             style: {
               fontFamily: string;
@@ -427,11 +378,19 @@ export async function paginateContent(
           }> = [];
 
           // Helper functions
+          const columnLeft = colLeft + marginLeft;
+          const columnRight = columnLeft + columnWidth;
+          const columnLeftTolerancePx = 4;
+
           function isInColumn(rect: DOMRect): boolean {
-            const rectMidX = rect.left + rect.width / 2;
-            return (
-              rectMidX >= colLeft + marginLeft && rectMidX < colLeft + marginLeft + columnWidth
-            );
+            // Assign runs to a column by where the line box starts (not midpoint).
+            // This avoids bleed-through from neighboring columns while still tolerating
+            // slight left overhang (e.g., opening punctuation/italics).
+            return rect.left >= columnLeft - columnLeftTolerancePx && rect.left < columnRight;
+          }
+
+          function roundToPagePrecision(value: number): number {
+            return Math.round(value * 1000) / 1000;
           }
 
           function toPageCoords(rect: DOMRect): {
@@ -441,10 +400,34 @@ export async function paginateContent(
             height: number;
           } {
             return {
-              x: Math.round(rect.left - colLeft - marginLeft),
-              y: Math.round(rect.top - marginTop),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height),
+              x: Math.max(0, roundToPagePrecision(rect.left - columnLeft)),
+              y: roundToPagePrecision(rect.top - marginTop),
+              width: Math.max(0, roundToPagePrecision(rect.width)),
+              height: Math.max(0, roundToPagePrecision(rect.height)),
+            };
+          }
+
+          function toPageCoordsFromBounds(bounds: {
+            left: number;
+            top: number;
+            right: number;
+            bottom: number;
+          }): {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+          } {
+            const localLeft = bounds.left - columnLeft;
+            const localTop = bounds.top - marginTop;
+            const localRight = bounds.right - columnLeft;
+            const localBottom = bounds.bottom - marginTop;
+
+            return {
+              x: Math.max(0, roundToPagePrecision(localLeft)),
+              y: roundToPagePrecision(localTop),
+              width: Math.max(0, roundToPagePrecision(localRight - localLeft)),
+              height: Math.max(0, roundToPagePrecision(localBottom - localTop)),
             };
           }
 
@@ -544,6 +527,40 @@ export async function paginateContent(
             return quantized;
           }
 
+          const measurementCanvas = document.createElement('canvas');
+          const measurementContext = measurementCanvas.getContext('2d');
+          const descenderByStyle = new Map<string, number>();
+
+          function estimateDescenderPx(style: {
+            fontFamily: string;
+            fontSize: number;
+            fontWeight: number;
+            fontStyle: 'normal' | 'italic';
+          }): number {
+            const key = `${style.fontFamily}|${style.fontSize}|${style.fontWeight}|${style.fontStyle}`;
+            const cached = descenderByStyle.get(key);
+            if (cached !== undefined) {
+              return cached;
+            }
+
+            const fallback = Math.max(1, style.fontSize * 0.2);
+            if (!measurementContext) {
+              descenderByStyle.set(key, fallback);
+              return fallback;
+            }
+
+            measurementContext.font = `${style.fontStyle} normal ${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
+            const metrics = measurementContext.measureText('Hg');
+
+            let descender = metrics.actualBoundingBoxDescent;
+            if (!Number.isFinite(descender) || descender <= 0) {
+              descender = fallback;
+            }
+
+            descenderByStyle.set(key, descender);
+            return descender;
+          }
+
           // Extract span rects in this column
           const spanElements = Array.from(document.querySelectorAll('[data-span-id]'));
           for (const el of spanElements) {
@@ -569,13 +586,31 @@ export async function paginateContent(
             }
           }
 
-          // Extract text runs in this column
+          // Extract text runs in this column.
+          // Important: preserve exact glyph order/spacing from Chromium layout.
+          // We intentionally avoid caret probing and whitespace normalization.
           const walker = document.createTreeWalker(
             document.querySelector('.cadence-content') || document.body,
             NodeFilter.SHOW_TEXT,
             {
-              acceptNode: (node) =>
-                node.textContent?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+              acceptNode: (node) => {
+                const textContent = node.textContent ?? '';
+                if (textContent.length === 0) {
+                  return NodeFilter.FILTER_REJECT;
+                }
+
+                const parentElement = node.parentElement;
+                if (!parentElement) {
+                  return NodeFilter.FILTER_REJECT;
+                }
+
+                const parentTag = parentElement.tagName;
+                if (parentTag === 'SCRIPT' || parentTag === 'STYLE' || parentTag === 'NOSCRIPT') {
+                  return NodeFilter.FILTER_REJECT;
+                }
+
+                return NodeFilter.FILTER_ACCEPT;
+              },
             },
           );
 
@@ -598,52 +633,179 @@ export async function paginateContent(
               inkGray: cssColorToInkGray(computedStyle.color),
             };
 
-            const nodeRange = document.createRange();
-            nodeRange.selectNodeContents(textNode);
-            const rects = nodeRange.getClientRects();
-
-            for (let i = 0; i < rects.length; i++) {
-              const rect = rects[i];
-              if (rect.width === 0 || rect.height === 0) continue;
-              if (!isInColumn(rect)) continue;
-
-              const pageCoords = toPageCoords(rect);
-
-              // Get text for this rect using caret probing
-              const midY = rect.top + rect.height / 2;
-              let lineText = '';
-
-              if (document.caretRangeFromPoint) {
-                const startRange = document.caretRangeFromPoint(rect.left + 1, midY);
-                const endRange = document.caretRangeFromPoint(rect.right - 1, midY);
-
-                if (startRange && endRange) {
-                  try {
-                    const lineRange = document.createRange();
-                    lineRange.setStart(startRange.startContainer, startRange.startOffset);
-                    lineRange.setEnd(endRange.startContainer, endRange.startOffset);
-                    lineText = lineRange.toString().replace(/\s+/g, ' ');
-                  } catch {}
-                }
-              }
-
-              if (lineText) {
-                textRuns.push({
-                  text: lineText,
-                  ...pageCoords,
-                  spanId,
-                  style,
-                });
-              }
+            const textContent = textNode.textContent ?? '';
+            if (textContent.length === 0) {
+              continue;
             }
+
+            const charRange = document.createRange();
+            let fragmentText = '';
+            let fragmentBounds: {
+              left: number;
+              top: number;
+              right: number;
+              bottom: number;
+            } | null = null;
+            let lastFragmentChar = '';
+            let lastFragmentCharRect: {
+              left: number;
+              top: number;
+              right: number;
+              bottom: number;
+            } | null = null;
+
+            const flushFragment = (): void => {
+              if (!fragmentBounds || fragmentText.length === 0) {
+                fragmentText = '';
+                fragmentBounds = null;
+                lastFragmentChar = '';
+                lastFragmentCharRect = null;
+                return;
+              }
+
+              const pageCoords = toPageCoordsFromBounds(fragmentBounds);
+              if (pageCoords.width <= 0 || pageCoords.height <= 0) {
+                fragmentText = '';
+                fragmentBounds = null;
+                lastFragmentChar = '';
+                lastFragmentCharRect = null;
+                return;
+              }
+
+              const descenderPx = estimateDescenderPx(style);
+              const baselineY = roundToPagePrecision(
+                pageCoords.y + pageCoords.height - Math.min(descenderPx, pageCoords.height),
+              );
+
+              textRuns.push({
+                text: fragmentText,
+                ...pageCoords,
+                baselineY,
+                spanId,
+                style,
+              });
+
+              fragmentText = '';
+              fragmentBounds = null;
+              lastFragmentChar = '';
+              lastFragmentCharRect = null;
+            };
+
+            for (let offset = 0; offset < textContent.length; ) {
+              const codePoint = textContent.codePointAt(offset);
+              if (codePoint === undefined) {
+                break;
+              }
+
+              const char = String.fromCodePoint(codePoint);
+              const nextOffset = offset + (codePoint > 0xffff ? 2 : 1);
+
+              charRange.setStart(textNode, offset);
+              charRange.setEnd(textNode, nextOffset);
+
+              const charRects = charRange.getClientRects();
+              let charRect: DOMRect | null = null;
+
+              for (let i = 0; i < charRects.length; i++) {
+                const rect = charRects[i];
+                if (rect.height === 0) continue;
+                if (!isInColumn(rect)) continue;
+                charRect = rect;
+                break;
+              }
+
+              if (!charRect) {
+                flushFragment();
+                offset = nextOffset;
+                continue;
+              }
+
+              const normalizedChar = /\s/u.test(char) ? ' ' : char;
+              if (normalizedChar === ' ' && charRect.width <= 0.5) {
+                offset = nextOffset;
+                continue;
+              }
+
+              const collapsedWhitespaceRectTolerancePx = 1;
+              const isCollapsedWhitespaceDuplicate =
+                normalizedChar === ' ' &&
+                lastFragmentChar === ' ' &&
+                lastFragmentCharRect !== null &&
+                Math.abs(charRect.left - lastFragmentCharRect.left) <=
+                  collapsedWhitespaceRectTolerancePx &&
+                Math.abs(charRect.top - lastFragmentCharRect.top) <=
+                  collapsedWhitespaceRectTolerancePx &&
+                Math.abs(charRect.right - lastFragmentCharRect.right) <=
+                  collapsedWhitespaceRectTolerancePx &&
+                Math.abs(charRect.bottom - lastFragmentCharRect.bottom) <=
+                  collapsedWhitespaceRectTolerancePx;
+
+              if (isCollapsedWhitespaceDuplicate) {
+                offset = nextOffset;
+                continue;
+              }
+
+              const lineTolerancePx = 1;
+              const sameLine =
+                fragmentBounds &&
+                Math.abs(charRect.top - fragmentBounds.top) <= lineTolerancePx &&
+                Math.abs(charRect.bottom - fragmentBounds.bottom) <= lineTolerancePx;
+
+              if (!fragmentBounds || !sameLine) {
+                // Keep all glyphs on the same visual line in one run, even when
+                // CSS creates large horizontal gaps (e.g., hanging indents/tabs).
+                flushFragment();
+                fragmentText = normalizedChar;
+                fragmentBounds = {
+                  left: charRect.left,
+                  top: charRect.top,
+                  right: charRect.right,
+                  bottom: charRect.bottom,
+                };
+                lastFragmentChar = normalizedChar;
+                lastFragmentCharRect = {
+                  left: charRect.left,
+                  top: charRect.top,
+                  right: charRect.right,
+                  bottom: charRect.bottom,
+                };
+                offset = nextOffset;
+                continue;
+              }
+
+              fragmentText += normalizedChar;
+              fragmentBounds.left = Math.min(fragmentBounds.left, charRect.left);
+              fragmentBounds.top = Math.min(fragmentBounds.top, charRect.top);
+              fragmentBounds.right = Math.max(fragmentBounds.right, charRect.right);
+              fragmentBounds.bottom = Math.max(fragmentBounds.bottom, charRect.bottom);
+              lastFragmentChar = normalizedChar;
+              lastFragmentCharRect = {
+                left: charRect.left,
+                top: charRect.top,
+                right: charRect.right,
+                bottom: charRect.bottom,
+              };
+              offset = nextOffset;
+            }
+
+            flushFragment();
           }
 
-          // Dedupe text runs by position
-          const seen = new Set<string>();
-          const dedupedRuns = textRuns.filter((run) => {
-            const key = `${run.x},${run.y},${run.text}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
+          // Drop standalone whitespace runs.
+          // Their horizontal gaps are already encoded by absolute x positions,
+          // and emitting thousands of isolated space-only runs hurts visual quality
+          // once coordinates are rounded for the current bundle format.
+          const withoutWhitespaceOnlyRuns = textRuns.filter((run) => !/^\s+$/u.test(run.text));
+
+          // Dedupe exact runs (including style), preserving first occurrence order.
+          const seenRunKeys = new Set<string>();
+          const dedupedRuns = withoutWhitespaceOnlyRuns.filter((run) => {
+            const styleKey = `${run.style.fontFamily}|${run.style.fontSize}|${run.style.fontWeight}|${run.style.fontStyle}|${run.style.inkGray}`;
+            const key = `${run.text}|${run.x}|${run.y}|${run.width}|${run.height}|${run.baselineY}|${run.spanId ?? ''}|${styleKey}`;
+            if (seenRunKeys.has(key)) {
+              return false;
+            }
+            seenRunKeys.add(key);
             return true;
           });
 
@@ -674,7 +836,20 @@ export async function paginateContent(
       });
     }
 
-    return pages;
+    const compactedPages = pages.filter(
+      (chapterPage) => chapterPage.textRuns.length > 0 || chapterPage.spanRects.length > 0,
+    );
+
+    const droppedEmptyPages = pages.length - compactedPages.length;
+    if (droppedEmptyPages > 0) {
+      for (let i = 0; i < compactedPages.length; i++) {
+        compactedPages[i]!.pageId = `${content.chapterId}_p${String(i + 1).padStart(4, '0')}`;
+        compactedPages[i]!.pageIndex = i;
+      }
+      console.log(`      Dropped ${droppedEmptyPages} empty page(s)`);
+    }
+
+    return compactedPages;
   } finally {
     await page.close();
   }

@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, join, posix, resolve } from 'node:path';
 import { Command } from 'commander';
 import {
   expandEmptySentenceRanges,
@@ -31,7 +31,14 @@ import {
 } from './layout/paginate.js';
 import { splitSpansAcrossPages } from './layout/split-spans-across-pages.js';
 import { loadBundle, previewAtTimestamp } from './preview.js';
-import type { BundleMeta, DeviceProfile, NormalizedContent, Span, TocEntry } from './types.js';
+import type {
+  BundleMeta,
+  DeviceProfile,
+  EPUBContainer,
+  NormalizedContent,
+  Span,
+  TocEntry,
+} from './types.js';
 import { logValidationResult, validateCompilationResult } from './validation.js';
 
 const program = new Command();
@@ -129,6 +136,409 @@ program
 program.parse();
 
 const OFFSET_SEARCH_WINDOW_SIZE = 5000;
+
+const BREAK_PROPERTY_ALIASES = new Map<string, string>([
+  ['page-break-before', 'break-before'],
+  ['page-break-after', 'break-after'],
+  ['column-break-before', 'break-before'],
+  ['column-break-after', 'break-after'],
+  ['-webkit-column-break-before', 'break-before'],
+  ['-webkit-column-break-after', 'break-after'],
+]);
+
+const BREAK_PROPERTIES = new Set<string>([
+  'break-before',
+  'break-after',
+  ...BREAK_PROPERTY_ALIASES.keys(),
+]);
+
+function normalizeEpubPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function resolveStylesheetPath(chapterPath: string, href: string): string | null {
+  const cleanedHref = href.trim().split('#')[0]?.split('?')[0] ?? '';
+  if (!cleanedHref) {
+    return null;
+  }
+
+  if (/^(?:[a-z]+:|\/\/)/i.test(cleanedHref)) {
+    return null;
+  }
+
+  const normalizedChapterPath = normalizeEpubPath(chapterPath);
+  const chapterDir = posix.dirname(normalizedChapterPath);
+
+  const resolved = cleanedHref.startsWith('/')
+    ? posix.normalize(cleanedHref.replace(/^\/+/, ''))
+    : posix.normalize(posix.join(chapterDir, cleanedHref));
+
+  if (!resolved || resolved === '.' || resolved === '..' || resolved.startsWith('../')) {
+    return null;
+  }
+
+  return normalizeEpubPath(resolved);
+}
+
+function getAttributeFromTag(tag: string, attributeName: string): string | null {
+  const regex = new RegExp(
+    `\\b${attributeName}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'>]+))`,
+    'i',
+  );
+  const match = tag.match(regex);
+
+  if (!match) {
+    return null;
+  }
+
+  return match[2] ?? match[3] ?? match[4] ?? null;
+}
+
+function extractStylesheetHrefsFromRawHTML(html: string): string[] {
+  const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+  if (!headMatch) {
+    return [];
+  }
+
+  const hrefs: string[] = [];
+  const seen = new Set<string>();
+  const linkTagRegex = /<link\b[^>]*>/gi;
+
+  let match: RegExpExecArray | null;
+  while ((match = linkTagRegex.exec(headMatch[1])) !== null) {
+    const linkTag = match[0];
+    const rel = (getAttributeFromTag(linkTag, 'rel') || '').toLowerCase();
+    const href = getAttributeFromTag(linkTag, 'href');
+
+    if (!href) {
+      continue;
+    }
+
+    const relTokens = rel.split(/\s+/).filter(Boolean);
+    if (!relTokens.includes('stylesheet')) {
+      continue;
+    }
+
+    if (!seen.has(href)) {
+      seen.add(href);
+      hrefs.push(href);
+    }
+  }
+
+  return hrefs;
+}
+
+function extractInlineStyleBlocksFromRawHTML(html: string): string[] {
+  const styleBlocks: string[] = [];
+  const styleTagRegex = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+
+  let match: RegExpExecArray | null;
+  while ((match = styleTagRegex.exec(html)) !== null) {
+    const css = match[1]?.trim();
+    if (css) {
+      styleBlocks.push(css);
+    }
+  }
+
+  return styleBlocks;
+}
+
+function stripCssComments(input: string): string {
+  return input.replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+function advancePastQuotedCssString(input: string, startIndex: number): number {
+  const quote = input[startIndex];
+  if (quote !== '"' && quote !== "'") {
+    return startIndex;
+  }
+
+  let index = startIndex + 1;
+  while (index < input.length) {
+    const ch = input[index];
+    if (ch === '\\') {
+      index += 2;
+      continue;
+    }
+    if (ch === quote) {
+      return index;
+    }
+    index += 1;
+  }
+
+  return input.length - 1;
+}
+
+function readCssBlock(
+  input: string,
+  startIndex: number,
+): { prelude: string; body: string; nextIndex: number } | null {
+  let cursor = startIndex;
+  while (cursor < input.length && /\s/.test(input[cursor]!)) {
+    cursor += 1;
+  }
+
+  if (cursor >= input.length || input[cursor] === '}') {
+    return null;
+  }
+
+  let openBraceIndex = -1;
+  let searchIndex = cursor;
+
+  while (searchIndex < input.length) {
+    const ch = input[searchIndex]!;
+
+    if (ch === '"' || ch === "'") {
+      searchIndex = advancePastQuotedCssString(input, searchIndex);
+      searchIndex += 1;
+      continue;
+    }
+
+    if (ch === ';') {
+      return {
+        prelude: '',
+        body: '',
+        nextIndex: searchIndex + 1,
+      };
+    }
+
+    if (ch === '{') {
+      openBraceIndex = searchIndex;
+      break;
+    }
+
+    if (ch === '}') {
+      return {
+        prelude: '',
+        body: '',
+        nextIndex: searchIndex + 1,
+      };
+    }
+
+    searchIndex += 1;
+  }
+
+  if (openBraceIndex === -1) {
+    return null;
+  }
+
+  const prelude = input.slice(cursor, openBraceIndex).trim();
+  if (!prelude) {
+    return {
+      prelude: '',
+      body: '',
+      nextIndex: openBraceIndex + 1,
+    };
+  }
+
+  let depth = 1;
+  let bodyIndex = openBraceIndex + 1;
+
+  while (bodyIndex < input.length && depth > 0) {
+    const ch = input[bodyIndex]!;
+
+    if (ch === '"' || ch === "'") {
+      bodyIndex = advancePastQuotedCssString(input, bodyIndex);
+      bodyIndex += 1;
+      continue;
+    }
+
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        break;
+      }
+    }
+
+    bodyIndex += 1;
+  }
+
+  if (depth !== 0) {
+    return null;
+  }
+
+  const body = input.slice(openBraceIndex + 1, bodyIndex);
+  return {
+    prelude,
+    body,
+    nextIndex: bodyIndex + 1,
+  };
+}
+
+function normalizeBreakValue(value: string): string {
+  const important = /\s*!important\s*$/i.test(value);
+  const withoutImportant = value.replace(/\s*!important\s*$/i, '').trim();
+  if (!withoutImportant) {
+    return '';
+  }
+
+  const lower = withoutImportant.toLowerCase();
+  return `${lower}${important ? ' !important' : ''}`;
+}
+
+function toColumnBreakValue(value: string): string {
+  const important = /\s*!important\s*$/i.test(value);
+  const withoutImportant = value.replace(/\s*!important\s*$/i, '').trim();
+  if (!withoutImportant) {
+    return '';
+  }
+
+  const lower = withoutImportant.toLowerCase();
+
+  let mapped = lower;
+  if (
+    lower === 'always' ||
+    lower === 'page' ||
+    lower === 'left' ||
+    lower === 'right' ||
+    lower === 'recto' ||
+    lower === 'verso'
+  ) {
+    mapped = 'column';
+  } else if (lower === 'avoid-page') {
+    mapped = 'avoid';
+  }
+
+  return `${mapped}${important ? ' !important' : ''}`;
+}
+
+function filterBreakDeclarations(block: string): string[] {
+  const declarations = block.split(';');
+  const filtered: string[] = [];
+  const seen = new Set<string>();
+
+  for (const declaration of declarations) {
+    const colonIndex = declaration.indexOf(':');
+    if (colonIndex === -1) {
+      continue;
+    }
+
+    const property = declaration.slice(0, colonIndex).trim().toLowerCase();
+    const value = declaration.slice(colonIndex + 1).trim();
+    if (!BREAK_PROPERTIES.has(property) || !value) {
+      continue;
+    }
+
+    const normalizedValue = normalizeBreakValue(value);
+    if (!normalizedValue) {
+      continue;
+    }
+
+    const canonicalDeclaration = `${property}: ${normalizedValue};`;
+    if (!seen.has(canonicalDeclaration)) {
+      seen.add(canonicalDeclaration);
+      filtered.push(canonicalDeclaration);
+    }
+
+    const aliasProperty = BREAK_PROPERTY_ALIASES.get(property);
+    if (aliasProperty) {
+      const aliasValue = toColumnBreakValue(value);
+      if (!aliasValue) {
+        continue;
+      }
+
+      const aliasDeclaration = `${aliasProperty}: ${aliasValue};`;
+      if (!seen.has(aliasDeclaration)) {
+        seen.add(aliasDeclaration);
+        filtered.push(aliasDeclaration);
+      }
+    }
+  }
+
+  return filtered;
+}
+
+function extractBreakRulesFromCssContent(css: string): string[] {
+  const rules: string[] = [];
+  let cursor = 0;
+
+  while (cursor < css.length) {
+    const block = readCssBlock(css, cursor);
+    if (!block) {
+      break;
+    }
+
+    cursor = block.nextIndex;
+
+    if (!block.prelude) {
+      continue;
+    }
+
+    const prelude = block.prelude.trim();
+
+    if (prelude.startsWith('@')) {
+      const nestedRules = extractBreakRulesFromCssContent(block.body);
+      if (nestedRules.length > 0) {
+        const nested = nestedRules.map((rule) => `  ${rule.replace(/\n/g, '\n  ')}`).join('\n');
+        rules.push(`${prelude} {\n${nested}\n}`);
+        continue;
+      }
+
+      const declarations = filterBreakDeclarations(block.body);
+      if (declarations.length > 0) {
+        rules.push(`${prelude} { ${declarations.join(' ')} }`);
+      }
+
+      continue;
+    }
+
+    const declarations = filterBreakDeclarations(block.body);
+    if (declarations.length === 0) {
+      continue;
+    }
+
+    rules.push(`${prelude} { ${declarations.join(' ')} }`);
+  }
+
+  return rules;
+}
+
+function extractBreakRulesFromCss(css: string): string[] {
+  const withoutComments = stripCssComments(css);
+  return extractBreakRulesFromCssContent(withoutComments);
+}
+
+async function extractBreakHintCssForChapter(
+  container: EPUBContainer,
+  chapterPath: string,
+  xhtml: string,
+): Promise<string> {
+  const cssSources: string[] = [];
+
+  cssSources.push(...extractInlineStyleBlocksFromRawHTML(xhtml));
+
+  const stylesheetHrefs = extractStylesheetHrefsFromRawHTML(xhtml);
+  for (const href of stylesheetHrefs) {
+    const stylesheetPath = resolveStylesheetPath(chapterPath, href);
+    if (!stylesheetPath) {
+      continue;
+    }
+
+    try {
+      const stylesheetBuffer = await container.readFile(stylesheetPath);
+      cssSources.push(stylesheetBuffer.toString('utf-8'));
+    } catch {
+      console.warn(`  Warning: Could not read stylesheet "${href}" for ${chapterPath}`);
+    }
+  }
+
+  const breakRules: string[] = [];
+  const seenRules = new Set<string>();
+
+  for (const css of cssSources) {
+    for (const rule of extractBreakRulesFromCss(css)) {
+      if (seenRules.has(rule)) {
+        continue;
+      }
+      seenRules.add(rule);
+      breakRules.push(rule);
+    }
+  }
+
+  return breakRules.join('\n');
+}
 
 async function loadTranscriptionFromFile(
   transcriptionPath: string,
@@ -497,8 +907,16 @@ async function alignEPUB(
 
         console.log(`    Aligned ${expanded.length} sentence ranges`);
 
-        // Tag sentences in XHTML
-        const { html: taggedHtml } = tagSentencesInXhtml(xhtml, chapter.id);
+        // Tag only aligned sentences in XHTML.
+        // This avoids mutating unrelated front matter/content that has no timing.
+        const alignedSentenceIndices = new Set(
+          expanded.filter((range) => range.start >= 0 && range.end >= 0).map((range) => range.id),
+        );
+        const { html: taggedHtml } = tagSentencesInXhtml(
+          xhtml,
+          chapter.id,
+          alignedSentenceIndices,
+        );
 
         // Create spans from sentence ranges
         for (const range of expanded) {
@@ -516,12 +934,14 @@ async function alignEPUB(
           });
         }
 
+        const breakHintCss = await extractBreakHintCssForChapter(container, chapter.href, xhtml);
+
         // Normalize for Chromium rendering
-        // We need to create a proper NormalizedContent with the tagged HTML
+        // We keep base typography deterministic while preserving source break hints.
         normalizedContents.push({
           chapterId: chapter.id,
           xhtmlPath: chapter.href,
-          html: generateNormalizedAlignedHTML(taggedHtml, profile, chapter.id),
+          html: generateNormalizedAlignedHTML(taggedHtml, profile, chapter.id, breakHintCss),
           spanIds: expanded.map((r) => `${chapter.id}-sentence${r.id}`),
         });
 
@@ -620,13 +1040,26 @@ async function alignEPUB(
   }
 }
 
+function escapeAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 /**
- * Generate normalized HTML for aligned content
+ * Generate normalized HTML for aligned content.
+ *
+ * Keep this intentionally narrow/safe: we apply deterministic book-like defaults
+ * (paragraph indents/spacing + pre whitespace) without importing full publisher CSS,
+ * which can introduce complex layout behavior that breaks column pagination.
  */
 function generateNormalizedAlignedHTML(
   taggedHtml: string,
   profile: DeviceProfile,
   chapterId: string,
+  breakHintCss: string,
 ): string {
   // Extract body content from the tagged HTML
   const bodyMatch = taggedHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
@@ -634,6 +1067,7 @@ function generateNormalizedAlignedHTML(
 
   const contentWidth = profile.viewportWidth - profile.margins.left - profile.margins.right;
   const contentHeight = profile.viewportHeight - profile.margins.top - profile.margins.bottom;
+  const tunedLineHeight = Number((profile.lineHeight + 0.06).toFixed(2));
 
   const css = `
     * {
@@ -649,8 +1083,10 @@ function generateNormalizedAlignedHTML(
     body {
       font-family: ${profile.fontFamily};
       font-size: ${profile.fontSize}px;
-      line-height: ${profile.lineHeight};
+      line-height: ${tunedLineHeight};
       padding: ${profile.margins.top}px ${profile.margins.right}px ${profile.margins.bottom}px ${profile.margins.left}px;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
     }
     .cadence-content {
       width: ${contentWidth}px;
@@ -658,6 +1094,49 @@ function generateNormalizedAlignedHTML(
       overflow-y: scroll;
       overflow-x: hidden;
     }
+    .cadence-content p {
+      text-align: justify;
+      text-indent: 1em;
+      margin-top: 0.25em;
+      margin-bottom: 0.25em;
+      margin-left: 0.5em;
+      margin-right: 0.5em;
+    }
+    .cadence-content p:first-child,
+    .cadence-content h1 + p,
+    .cadence-content h2 + p,
+    .cadence-content h3 + p,
+    .cadence-content h4 + p,
+    .cadence-content h5 + p,
+    .cadence-content h6 + p {
+      text-indent: 0;
+    }
+    .cadence-content h1,
+    .cadence-content h2,
+    .cadence-content h3,
+    .cadence-content h4,
+    .cadence-content h5,
+    .cadence-content h6 {
+      text-align: center;
+      margin-top: 1em;
+      margin-bottom: 0.75em;
+    }
+    .cadence-content blockquote {
+      margin-left: 1.5em;
+      margin-right: 0;
+    }
+    .cadence-content pre {
+      white-space: pre-wrap;
+      text-indent: 0;
+      margin-left: 1.5em;
+      margin-top: 0.5em;
+      margin-bottom: 0.5em;
+      font-family: ${profile.fontFamily};
+    }
+    ${breakHintCss ? `
+    /* Preserved source break hints (generic) */
+    ${breakHintCss}
+    ` : ''}
     /* Strip complex layouts that break CSS columns */
     table, tr, td, th {
       display: block !important;
@@ -671,10 +1150,6 @@ function generateNormalizedAlignedHTML(
     }
     img { max-width: 100% !important; height: auto !important; }
   `;
-
-  // Escape HTML attribute value
-  const escapeAttr = (s: string) =>
-    s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   return `<!DOCTYPE html>
 <html>
