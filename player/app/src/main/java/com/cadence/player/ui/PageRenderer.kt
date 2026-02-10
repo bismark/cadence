@@ -50,7 +50,8 @@ private class NotoSerifFonts(context: Context) {
 private data class PaintKey(
     val fontSize: Float,
     val fontWeight: Int,
-    val fontStyle: String
+    val fontStyle: String,
+    val inkGray: Int
 )
 
 /**
@@ -60,15 +61,18 @@ private class TextPaintCache(private val fonts: NotoSerifFonts) {
     private val cache = mutableMapOf<PaintKey, android.graphics.Paint>()
 
     fun get(style: TextStyle): android.graphics.Paint {
+        val inkGray = style.inkGray.coerceIn(0, 255)
+
         val key = PaintKey(
             fontSize = style.fontSize,
             fontWeight = style.fontWeight,
-            fontStyle = style.fontStyle
+            fontStyle = style.fontStyle,
+            inkGray = inkGray
         )
 
         return cache.getOrPut(key) {
             android.graphics.Paint().apply {
-                color = android.graphics.Color.BLACK
+                color = android.graphics.Color.rgb(inkGray, inkGray, inkGray)
                 textSize = style.fontSize
                 typeface = fonts.get(style.fontWeight, style.fontStyle)
                 isAntiAlias = true
@@ -79,7 +83,7 @@ private class TextPaintCache(private val fonts: NotoSerifFonts) {
 
 /**
  * Renders a page using Compose Canvas
- * Designed for e-ink: black/white only, no grays except for highlight
+ * Designed for e-ink grayscale rendering
  *
  * Coordinates from bundle are in pixels, matching the device profile.
  * We apply margins as pixel offsets to avoid dp conversion issues.
@@ -269,7 +273,7 @@ fun PageRenderer(
 
 /**
  * Draw a single text run
- * E-ink optimized: always black text
+ * E-ink optimized: grayscale text from compiler-provided style.
  */
 private fun DrawScope.drawTextRun(
     textRun: TextRun,

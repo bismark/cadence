@@ -80,7 +80,7 @@ function generatePageHTML(page: Page, profile: DeviceProfile, activeSpanId?: str
         `font-size: ${run.style.fontSize}px`,
         `font-weight: ${run.style.fontWeight}`,
         `font-style: ${run.style.fontStyle}`,
-        `color: ${run.style.color}`,
+        `color: rgb(${run.style.inkGray}, ${run.style.inkGray}, ${run.style.inkGray})`,
         `background: ${bgColor}`,
         `line-height: ${run.height}px`,
         `overflow: hidden`,

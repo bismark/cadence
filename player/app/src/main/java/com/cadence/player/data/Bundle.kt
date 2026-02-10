@@ -45,7 +45,7 @@ data class TextStyle(
     val fontSize: Float,
     val fontWeight: Int,
     val fontStyle: String,  // "normal" or "italic"
-    val color: String
+    val inkGray: Int  // 0=black, 255=white
 )
 
 /**

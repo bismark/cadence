@@ -12,6 +12,7 @@ const FONTS_DIR = join(__dirname, '../../fonts');
 let browser: Browser | null = null;
 
 const EPUB_VIRTUAL_ORIGIN = 'https://epub.local';
+const EINK_GRAY_LEVELS = 4;
 
 function normalizeEpubPath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\/+/, '');
@@ -403,7 +404,7 @@ export async function paginateContent(
       const colLeft = colIndex * (columnWidth + columnGap);
 
       const pageData = await page.evaluate(
-        ({ colLeft, columnWidth, marginTop, marginLeft }) => {
+        ({ colLeft, columnWidth, marginTop, marginLeft, grayLevels }) => {
           const textRuns: Array<{
             text: string;
             x: number;
@@ -416,7 +417,7 @@ export async function paginateContent(
               fontSize: number;
               fontWeight: number;
               fontStyle: 'normal' | 'italic';
-              color: string;
+              inkGray: number;
             };
           }> = [];
 
@@ -445,6 +446,102 @@ export async function paginateContent(
               width: Math.round(rect.width),
               height: Math.round(rect.height),
             };
+          }
+
+          function clamp(value: number, min: number, max: number): number {
+            return Math.min(Math.max(value, min), max);
+          }
+
+          function parseRgbComponent(component: string): number | null {
+            const trimmed = component.trim();
+
+            if (trimmed.endsWith('%')) {
+              const percent = parseFloat(trimmed.slice(0, -1));
+              if (Number.isNaN(percent)) {
+                return null;
+              }
+
+              return (clamp(percent, 0, 100) / 100) * 255;
+            }
+
+            const value = parseFloat(trimmed);
+            if (Number.isNaN(value)) {
+              return null;
+            }
+
+            return clamp(value, 0, 255);
+          }
+
+          function parseAlphaComponent(component: string): number | null {
+            const trimmed = component.trim();
+
+            if (trimmed.endsWith('%')) {
+              const percent = parseFloat(trimmed.slice(0, -1));
+              if (Number.isNaN(percent)) {
+                return null;
+              }
+
+              return clamp(percent, 0, 100) / 100;
+            }
+
+            const value = parseFloat(trimmed);
+            if (Number.isNaN(value)) {
+              return null;
+            }
+
+            return clamp(value, 0, 1);
+          }
+
+          function parseCssColorToRgba(
+            color: string,
+          ): { r: number; g: number; b: number; a: number } | null {
+            const rgbMatch = color.trim().match(/^rgba?\(([^)]+)\)$/i);
+            if (!rgbMatch) {
+              return null;
+            }
+
+            const parts = rgbMatch[1].split(',').map((part) => part.trim());
+            if (parts.length < 3 || parts.length > 4) {
+              return null;
+            }
+
+            const red = parseRgbComponent(parts[0]);
+            const green = parseRgbComponent(parts[1]);
+            const blue = parseRgbComponent(parts[2]);
+            const alpha = parts.length === 4 ? parseAlphaComponent(parts[3]) : 1;
+
+            if (red === null || green === null || blue === null || alpha === null) {
+              return null;
+            }
+
+            return { r: red, g: green, b: blue, a: alpha };
+          }
+
+          const inkGrayByColor = new Map<string, number>();
+
+          function cssColorToInkGray(color: string): number {
+            const cached = inkGrayByColor.get(color);
+            if (cached !== undefined) {
+              return cached;
+            }
+
+            const parsed = parseCssColorToRgba(color);
+            if (!parsed) {
+              inkGrayByColor.set(color, 0);
+              return 0;
+            }
+
+            const luminance = 0.2126 * parsed.r + 0.7152 * parsed.g + 0.0722 * parsed.b;
+            const grayOnWhite = 255 - parsed.a * (255 - luminance);
+            const gray = clamp(grayOnWhite, 0, 255);
+
+            const levels = Math.max(2, Math.round(grayLevels));
+            const step = 255 / (levels - 1);
+            const quantizedGray = Math.round(gray / step) * step;
+            const quantized = Math.round(clamp(quantizedGray, 0, 255));
+
+            inkGrayByColor.set(color, quantized);
+            return quantized;
           }
 
           // Extract span rects in this column
@@ -498,7 +595,7 @@ export async function paginateContent(
               fontStyle: (computedStyle.fontStyle === 'italic' ? 'italic' : 'normal') as
                 | 'normal'
                 | 'italic',
-              color: computedStyle.color,
+              inkGray: cssColorToInkGray(computedStyle.color),
             };
 
             const nodeRange = document.createRange();
@@ -557,6 +654,7 @@ export async function paginateContent(
           columnWidth,
           marginTop: profile.margins.top,
           marginLeft: profile.margins.left,
+          grayLevels: EINK_GRAY_LEVELS,
         },
       );
 

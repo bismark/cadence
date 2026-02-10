@@ -58,7 +58,7 @@ export interface TextStyle {
   fontSize: number;
   fontWeight: number;
   fontStyle: 'normal' | 'italic';
-  color: string;
+  inkGray: number; // E-ink grayscale intensity (0=black, 255=white)
 }
 
 /**
