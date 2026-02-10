@@ -438,7 +438,6 @@ async function alignEPUB(
       const normalizedContents: NormalizedContent[] = [];
       let lastTranscriptionOffset = 0;
       let lastSentenceRange: SentenceRange | null = null;
-      let _globalSpanIndex = 0;
 
       for (let i = 0; i < spineFiles.length; i++) {
         const chapter = spineFiles[i];
@@ -459,7 +458,6 @@ async function alignEPUB(
 
         // Find chapter offset in transcription
         // Skip searching if we've consumed most of the transcription (single audio track)
-        const transcriptionRemaining = transcription.transcript.length - lastTranscriptionOffset;
         const transcriptionConsumedPct =
           (lastTranscriptionOffset / transcription.transcript.length) * 100;
 
@@ -516,7 +514,6 @@ async function alignEPUB(
             clipBeginMs,
             clipEndMs,
           });
-          _globalSpanIndex++;
         }
 
         // Normalize for Chromium rendering
@@ -570,13 +567,6 @@ async function alignEPUB(
 
       // Step 7: Prepare audio files for bundle
       console.log('Step 7: Preparing audio files...');
-
-      // Create audio file info from tracks
-      const _audioFileInfo = tracks.map((t) => ({
-        id: basename(t.path, '.m4b').replace(/[^a-zA-Z0-9]/g, '_'),
-        href: t.path,
-        mediaType: 'audio/mp4' as const,
-      }));
 
       // Step 8: Write bundle
       console.log('Step 8: Writing bundle...');

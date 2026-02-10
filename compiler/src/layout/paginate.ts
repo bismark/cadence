@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { type Browser, chromium, type Page as PlaywrightPage } from 'playwright';
+import { type Browser, chromium } from 'playwright';
 import { getContentArea } from '../device-profiles/profiles.js';
-import type { DeviceProfile, NormalizedContent, Page, PageSpanRect, TextRun } from '../types.js';
+import type { DeviceProfile, NormalizedContent, Page } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -221,7 +221,7 @@ export async function paginateContent(
       const colLeft = colIndex * (columnWidth + columnGap);
 
       const pageData = await page.evaluate(
-        ({ colIndex, colLeft, columnWidth, columnHeight, marginTop, marginLeft }) => {
+        ({ colLeft, columnWidth, marginTop, marginLeft }) => {
           const textRuns: Array<{
             text: string;
             x: number;
@@ -371,10 +371,8 @@ export async function paginateContent(
           return { textRuns: dedupedRuns, spanRects };
         },
         {
-          colIndex,
           colLeft,
           columnWidth,
-          columnHeight,
           marginTop: profile.margins.top,
           marginLeft: profile.margins.left,
         },
@@ -400,291 +398,6 @@ export async function paginateContent(
   } finally {
     await page.close();
   }
-}
-
-/**
- * Extract rectangles for all spans visible on the current page view
- * Returns page-local coordinates (relative to content area, not viewport)
- */
-async function _extractSpanRects(
-  page: PlaywrightPage,
-  pageHeight: number,
-  marginTop: number,
-  marginLeft: number,
-  actualScrollTop: number,
-  pageContentStart: number,
-  pageContentEnd: number,
-): Promise<PageSpanRect[]> {
-  const result = await page.evaluate(
-    ({ pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd }) => {
-      const spanRects: Array<{
-        spanId: string;
-        rects: Array<{ x: number; y: number; width: number; height: number }>;
-      }> = [];
-      const elements = Array.from(document.querySelectorAll('[data-span-id]'));
-
-      for (const el of elements) {
-        const spanId = el.getAttribute('data-span-id');
-        if (!spanId) continue;
-
-        // Use Range to get tight text rects (not block element width)
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        const clientRects = range.getClientRects();
-        const rects: Array<{ x: number; y: number; width: number; height: number }> = [];
-
-        for (let i = 0; i < clientRects.length; i++) {
-          const rect = clientRects[i];
-
-          // Convert viewport coordinates to page-local coordinates
-          const pageLocalX = rect.left - marginLeft;
-          const pageLocalY = rect.top - marginTop;
-
-          // Include content if its TOP is on or below the top of the viewport (y >= 0)
-          // Skip content whose top is above viewport (already shown on previous page)
-          // No upper bound - content may extend past page bottom, player will clip
-          if (pageLocalY >= 0) {
-            rects.push({
-              x: Math.round(pageLocalX),
-              y: Math.round(pageLocalY),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height),
-            });
-          }
-        }
-
-        if (rects.length > 0) {
-          spanRects.push({ spanId, rects });
-        }
-      }
-
-      return spanRects;
-    },
-    { pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd },
-  );
-
-  return result;
-}
-
-/**
- * Extract positioned text runs visible on the current page view
- * Uses caret probing to accurately extract text per visual line
- */
-async function _extractTextRuns(
-  page: PlaywrightPage,
-  pageHeight: number,
-  marginTop: number,
-  marginLeft: number,
-  actualScrollTop: number,
-  pageContentStart: number,
-  pageContentEnd: number,
-): Promise<TextRun[]> {
-  const result = await page.evaluate(
-    ({ pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd }) => {
-      const textRuns: Array<{
-        text: string;
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-        spanId?: string;
-        style: {
-          fontFamily: string;
-          fontSize: number;
-          fontWeight: number;
-          fontStyle: 'normal' | 'italic';
-          color: string;
-        };
-      }> = [];
-
-      /**
-       * Get caret position from point, with fallback
-       */
-      function caretFromPoint(x: number, y: number): { node: Node; offset: number } | null {
-        // Chrome/modern browsers
-        if (document.caretRangeFromPoint) {
-          const range = document.caretRangeFromPoint(x, y);
-          if (range) {
-            return { node: range.startContainer, offset: range.startOffset };
-          }
-        }
-        return null;
-      }
-
-      /**
-       * Check if a caret position is within a range
-       */
-      function isCaretInRange(caret: { node: Node; offset: number }, range: Range): boolean {
-        try {
-          return range.isPointInRange(caret.node, caret.offset);
-        } catch {
-          return false;
-        }
-      }
-
-      /**
-       * Extract line text using caret probing
-       */
-      function extractLineText(rect: DOMRect, sourceRange: Range): string {
-        const midY = rect.top + rect.height / 2;
-
-        // Probe start and end of line with small insets
-        const startCaret = caretFromPoint(rect.left + 1, midY);
-        const endCaret = caretFromPoint(rect.right - 1, midY);
-
-        if (!startCaret || !endCaret) {
-          return '';
-        }
-
-        // Clamp carets to source range
-        const clampedStart = isCaretInRange(startCaret, sourceRange)
-          ? startCaret
-          : {
-              node: sourceRange.startContainer,
-              offset: sourceRange.startOffset,
-            };
-        const clampedEnd = isCaretInRange(endCaret, sourceRange)
-          ? endCaret
-          : {
-              node: sourceRange.endContainer,
-              offset: sourceRange.endOffset,
-            };
-
-        // Create sub-range for this line
-        try {
-          const lineRange = document.createRange();
-          lineRange.setStart(clampedStart.node, clampedStart.offset);
-          lineRange.setEnd(clampedEnd.node, clampedEnd.offset);
-          return lineRange.toString();
-        } catch {
-          return '';
-        }
-      }
-
-      /**
-       * Group rects by visual line (same Y within tolerance)
-       */
-      function groupRectsByLine(rects: DOMRectList): DOMRect[][] {
-        const lines: DOMRect[][] = [];
-        const tolerance = 2; // pixels
-
-        for (let i = 0; i < rects.length; i++) {
-          const rect = rects[i];
-          if (rect.width === 0 || rect.height === 0) continue;
-
-          // Find existing line with similar Y
-          let foundLine = false;
-          for (const line of lines) {
-            if (Math.abs(line[0].top - rect.top) < tolerance) {
-              line.push(rect);
-              foundLine = true;
-              break;
-            }
-          }
-
-          if (!foundLine) {
-            lines.push([rect]);
-          }
-        }
-
-        // Sort lines by Y position
-        lines.sort((a, b) => a[0].top - b[0].top);
-
-        return lines;
-      }
-
-      /**
-       * Merge rects on the same line into one bounding rect
-       */
-      function mergeLineRects(rects: DOMRect[]): DOMRect {
-        const left = Math.min(...rects.map((r) => r.left));
-        const right = Math.max(...rects.map((r) => r.right));
-        const top = Math.min(...rects.map((r) => r.top));
-        const bottom = Math.max(...rects.map((r) => r.bottom));
-
-        return new DOMRect(left, top, right - left, bottom - top);
-      }
-
-      // Walk the DOM to find all text nodes
-      const walker = document.createTreeWalker(
-        document.querySelector('.cadence-content') || document.body,
-        NodeFilter.SHOW_TEXT,
-        {
-          acceptNode: (node) => {
-            const text = node.textContent?.trim();
-            if (!text) return NodeFilter.FILTER_REJECT;
-            return NodeFilter.FILTER_ACCEPT;
-          },
-        },
-      );
-
-      let textNode: Text | null;
-      while ((textNode = walker.nextNode() as Text | null)) {
-        const parent = textNode.parentElement;
-        if (!parent) continue;
-
-        // Check if this text is inside a span element
-        const spanElement = parent.closest('[data-span-id]');
-        const spanId = spanElement?.getAttribute('data-span-id') || undefined;
-
-        // Get computed style
-        const computedStyle = window.getComputedStyle(parent);
-        const style = {
-          fontFamily: computedStyle.fontFamily,
-          fontSize: parseFloat(computedStyle.fontSize),
-          fontWeight: parseInt(computedStyle.fontWeight, 10) || 400,
-          fontStyle: (computedStyle.fontStyle === 'italic' ? 'italic' : 'normal') as
-            | 'normal'
-            | 'italic',
-          color: computedStyle.color,
-        };
-
-        // Create range for this text node
-        const nodeRange = document.createRange();
-        nodeRange.selectNodeContents(textNode);
-        const rects = nodeRange.getClientRects();
-
-        // Group rects by visual line
-        const lines = groupRectsByLine(rects);
-
-        for (const lineRects of lines) {
-          // Merge rects on the same line
-          const lineRect = mergeLineRects(lineRects);
-
-          // Convert to page-local coordinates
-          const pageLocalX = lineRect.left - marginLeft;
-          const pageLocalY = lineRect.top - marginTop;
-
-          // Include content if its TOP is on or below the top of the viewport (y >= 0)
-          // Skip content whose top is above viewport (already shown on previous page)
-          // No upper bound - content may extend past page bottom, player will clip
-          if (pageLocalY >= 0) {
-            // Extract the actual text for this line using caret probing
-            const lineText = extractLineText(lineRect, nodeRange);
-
-            if (lineText) {
-              // Normalize whitespace (collapse \n\t\s sequences to single space)
-              const normalizedText = lineText.replace(/\s+/g, ' ');
-              textRuns.push({
-                text: normalizedText,
-                x: Math.round(pageLocalX),
-                y: Math.round(pageLocalY),
-                width: Math.round(lineRect.width),
-                height: Math.round(lineRect.height),
-                spanId,
-                style,
-              });
-            }
-          }
-        }
-      }
-
-      return textRuns;
-    },
-    { pageHeight, marginTop, marginLeft, actualScrollTop, pageContentStart, pageContentEnd },
-  );
-
-  return result;
 }
 
 /**

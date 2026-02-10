@@ -67,9 +67,8 @@ function findStartTimestamp(matchStartIndex: number, transcription: Transcriptio
 
 function findEndTimestampEntry(matchEndIndex: number, transcription: Transcription) {
   return (
-    transcription.wordTimeline.findLast(
-      (entry) => (entry.startOffsetUtf16 ?? 0) < matchEndIndex,
-    ) ?? null
+    transcription.wordTimeline.findLast((entry) => (entry.startOffsetUtf16 ?? 0) < matchEndIndex) ??
+    null
   );
 }
 
@@ -80,8 +79,7 @@ function findEndTimestampForAudiofile(
 ) {
   return (
     transcription.wordTimeline.findLast(
-      (entry) =>
-        entry.audiofile === audiofile && (entry.startOffsetUtf16 ?? 0) < matchEndIndex,
+      (entry) => entry.audiofile === audiofile && (entry.startOffsetUtf16 ?? 0) < matchEndIndex,
     ) ?? null
   );
 }
@@ -261,22 +259,6 @@ export async function getSentenceRanges(
     sentenceRanges,
     transcriptionOffset: lastMatchEnd,
   };
-}
-
-/**
- * Given two sentence ranges, find the trailing gap of the first
- * and the leading gap of the second, and return the larger gap
- * and corresponding audiofile.
- */
-async function getLargestGap(
-  trailing: SentenceRange,
-  leading: SentenceRange,
-): Promise<[number, string]> {
-  const leadingGap = leading.start;
-  const trailingGap = (await getTrackDuration(trailing.audiofile)) - trailing.end;
-
-  if (trailingGap > leadingGap) return [trailingGap, trailing.audiofile];
-  return [leadingGap, leading.audiofile];
 }
 
 export async function interpolateSentenceRanges(
