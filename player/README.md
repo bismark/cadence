@@ -58,6 +58,22 @@ Reports:
 
 4. Tap the screen to play/pause audio. The text highlights sync with playback.
 
+## Jump to a page via ADB (debug)
+
+You can jump to a page directly from ADB without tapping through navigation:
+
+```bash
+# 1-based page number (matches UI page counter)
+adb shell am start -n com.cadence.player/.MainActivity --ei page 30
+
+# 0-based page index (internal index)
+adb shell am start -n com.cadence.player/.MainActivity --ei pageIndex 29
+```
+
+Notes:
+- The app clamps out-of-range values to the nearest valid page.
+- `singleTop` launch mode is enabled, so if the app is already in front this intent is handled in-place.
+
 ## Bundle Location
 
 The app looks for bundles in these locations:

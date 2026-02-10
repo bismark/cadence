@@ -28,12 +28,65 @@ import com.cadence.player.data.CadenceBundle
 import com.cadence.player.perf.PerfLog
 import com.cadence.player.ui.PlayerScreen
 import java.io.File
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
+
+private const val EXTRA_PAGE = "page"            // 1-based (UI-friendly)
+private const val EXTRA_PAGE_INDEX = "pageIndex"  // 0-based
+private const val EXTRA_PAGE_NAMESPACED = "com.cadence.player.extra.PAGE"
+private const val EXTRA_PAGE_INDEX_NAMESPACED = "com.cadence.player.extra.PAGE_INDEX"
+
+private fun parseIntExtra(intent: Intent, key: String): Int? {
+    if (!intent.hasExtra(key)) {
+        return null
+    }
+
+    intent.getStringExtra(key)?.toIntOrNull()?.let { return it }
+
+    val intValue = intent.getIntExtra(key, Int.MIN_VALUE)
+    if (intValue != Int.MIN_VALUE) {
+        return intValue
+    }
+
+    val longValue = intent.getLongExtra(key, Long.MIN_VALUE)
+    if (longValue != Long.MIN_VALUE) {
+        return longValue.toInt()
+    }
+
+    return null
+}
+
+private fun parseJumpPageIndex(intent: Intent?): Int? {
+    intent ?: return null
+
+    // Prefer explicit 0-based index when provided
+    parseIntExtra(intent, EXTRA_PAGE_INDEX)?.let { return it }
+    parseIntExtra(intent, EXTRA_PAGE_INDEX_NAMESPACED)?.let { return it }
+
+    // Also accept 1-based page numbers to match on-screen numbering
+    parseIntExtra(intent, EXTRA_PAGE)?.let { return it - 1 }
+    parseIntExtra(intent, EXTRA_PAGE_NAMESPACED)?.let { return it - 1 }
+
+    return null
+}
 
 class MainActivity : ComponentActivity() {
+    private val jumpPageRequests = MutableSharedFlow<Int>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
+    private var launchPageIndexOverride: Int? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         PerfLog.initialize(applicationContext)
+        launchPageIndexOverride = parseJumpPageIndex(intent)
 
         // Enable fullscreen immersive mode - hide system bars
         // This is important for e-ink devices and to match the compiler's viewport assumptions
@@ -44,14 +97,30 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                CadenceApp()
+                CadenceApp(
+                    initialPageIndexOverride = launchPageIndexOverride,
+                    jumpPageRequests = jumpPageRequests
+                )
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+
+        val jumpPageIndex = parseJumpPageIndex(intent) ?: return
+        lifecycleScope.launch {
+            jumpPageRequests.emit(jumpPageIndex)
         }
     }
 }
 
 @Composable
-fun CadenceApp() {
+fun CadenceApp(
+    initialPageIndexOverride: Int? = null,
+    jumpPageRequests: Flow<Int> = emptyFlow()
+) {
     val context = LocalContext.current
     var bundle by remember { mutableStateOf<CadenceBundle?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -193,7 +262,12 @@ fun CadenceApp() {
             ErrorScreen(error!!)
         }
         bundle != null -> {
-            PlayerScreen(bundle = bundle!!)
+            PlayerScreen(
+                bundle = bundle!!,
+                initialPageIndex = initialPageIndexOverride ?: 0,
+                preferInitialPage = initialPageIndexOverride != null,
+                jumpToPageRequests = jumpPageRequests
+            )
         }
     }
 }

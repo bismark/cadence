@@ -23,6 +23,8 @@ import com.cadence.player.data.SpanEntry
 import com.cadence.player.perf.PerfLog
 import com.cadence.player.perf.RollingTimingStats
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlin.math.abs
 
 /**
@@ -31,7 +33,9 @@ import kotlin.math.abs
 @Composable
 fun PlayerScreen(
     bundle: CadenceBundle,
-    initialPageIndex: Int = 0
+    initialPageIndex: Int = 0,
+    preferInitialPage: Boolean = false,
+    jumpToPageRequests: Flow<Int> = emptyFlow()
 ) {
     val context = LocalContext.current
     val audioPlayer = remember { AudioPlayer(context) }
@@ -40,8 +44,12 @@ fun PlayerScreen(
     // Use bundleId from meta.json, fallback to path hash for old bundles
     val bookId = remember { bundle.meta.bundleId ?: bundle.basePath.hashCode().toString() }
 
+    val totalPages = bundle.pages.size
+    val normalizedInitialPageIndex =
+        if (totalPages > 0) initialPageIndex.coerceIn(0, totalPages - 1) else 0
+
     // State
-    var currentPageIndex by remember { mutableIntStateOf(initialPageIndex) }
+    var currentPageIndex by remember { mutableIntStateOf(normalizedInitialPageIndex) }
     var activeSpan by remember { mutableStateOf<SpanEntry?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var positionMs by remember { mutableLongStateOf(0L) }
@@ -53,7 +61,6 @@ fun PlayerScreen(
     val savePositionStats = remember { RollingTimingStats("save-position", reportEvery = 20, slowThresholdMs = 2.0) }
 
     val currentPage = bundle.getPage(currentPageIndex)
-    val totalPages = bundle.pages.size
 
     // Load audio and restore saved position on startup
     LaunchedEffect(Unit) {
@@ -61,22 +68,47 @@ fun PlayerScreen(
 
         audioPlayer.loadFile(bundle.audioPath)
 
-        // Restore saved position
-        val savedPosition = playbackPrefs.getPosition(bookId)
-        if (savedPosition > 0) {
-            audioPlayer.seekTo(savedPosition)
-            positionMs = savedPosition
-            // Find and set the active span for the restored position
-            bundle.findSpanAtTime(savedPosition.toDouble())?.let { span ->
-                activeSpan = span
-                currentPageIndex = span.pageIndex
-            }
-        }
+        if (preferInitialPage && totalPages > 0) {
+            val targetPageIndex = initialPageIndex.coerceIn(0, totalPages - 1)
+            currentPageIndex = targetPageIndex
 
-        if (PerfLog.enabled) {
-            PerfLog.d(
-                "player startup restore=${PerfLog.formatNs(System.nanoTime() - startupStartNs)}ms savedPositionMs=$savedPosition"
-            )
+            val targetSpan = bundle
+                .getPage(targetPageIndex)
+                ?.spanRects
+                ?.asSequence()
+                ?.mapNotNull { spanRect -> bundle.getSpanById(spanRect.spanId) }
+                ?.firstOrNull { span -> span.clipBeginMs >= 0 && span.clipEndMs > span.clipBeginMs }
+
+            if (targetSpan != null) {
+                val targetPositionMs = targetSpan.clipBeginMs.toLong() + 1L
+                activeSpan = targetSpan
+                audioPlayer.seekTo(targetPositionMs)
+                positionMs = targetPositionMs
+            }
+
+            if (PerfLog.enabled) {
+                PerfLog.d(
+                    "player startup jump pageIndex=$targetPageIndex requestedInitial=$initialPageIndex"
+                )
+            }
+        } else {
+            // Restore saved position
+            val savedPosition = playbackPrefs.getPosition(bookId)
+            if (savedPosition > 0) {
+                audioPlayer.seekTo(savedPosition)
+                positionMs = savedPosition
+                // Find and set the active span for the restored position
+                bundle.findSpanAtTime(savedPosition.toDouble())?.let { span ->
+                    activeSpan = span
+                    currentPageIndex = span.pageIndex
+                }
+            }
+
+            if (PerfLog.enabled) {
+                PerfLog.d(
+                    "player startup restore=${PerfLog.formatNs(System.nanoTime() - startupStartNs)}ms savedPositionMs=$savedPosition"
+                )
+            }
         }
     }
 
@@ -223,6 +255,33 @@ fun PlayerScreen(
         return null
     }
 
+    fun jumpToPage(targetPageIndex: Int) {
+        if (totalPages <= 0) {
+            return
+        }
+
+        val clampedPageIndex = targetPageIndex.coerceIn(0, totalPages - 1)
+        currentPageIndex = clampedPageIndex
+
+        findFirstTimedSpanOnPage(clampedPageIndex)?.let { span ->
+            seekToSpan(span, play = false, overridePageIndex = clampedPageIndex)
+            return
+        }
+
+        // Keep page visible even if it has no timed spans.
+        activeSpan = null
+        audioPlayer.pause()
+    }
+
+    LaunchedEffect(jumpToPageRequests, totalPages) {
+        jumpToPageRequests.collect { requestedPageIndex ->
+            if (PerfLog.enabled) {
+                PerfLog.d("jump request pageIndex=$requestedPageIndex")
+            }
+            jumpToPage(requestedPageIndex)
+        }
+    }
+
     fun handlePlayPause() {
         if (isPlaying) {
             audioPlayer.pause()
@@ -307,20 +366,12 @@ fun PlayerScreen(
                 onDebugToggle = { debugMode = !debugMode },
                 onPreviousPage = {
                     if (currentPageIndex > 0) {
-                        currentPageIndex--
-                        val targetIndex = currentPageIndex
-                        findFirstTimedSpanOnPage(targetIndex)?.let { span ->
-                            seekToSpan(span, play = false, overridePageIndex = targetIndex)
-                        }
+                        jumpToPage(currentPageIndex - 1)
                     }
                 },
                 onNextPage = {
                     if (currentPageIndex < totalPages - 1) {
-                        currentPageIndex++
-                        val targetIndex = currentPageIndex
-                        findFirstTimedSpanOnPage(targetIndex)?.let { span ->
-                            seekToSpan(span, play = false, overridePageIndex = targetIndex)
-                        }
+                        jumpToPage(currentPageIndex + 1)
                     }
                 }
             )
