@@ -175,6 +175,7 @@ export interface EPUBContainer {
  */
 export interface NormalizedContent {
   chapterId: string;
+  xhtmlPath: string; // Source XHTML path in EPUB package (for URL base resolution)
   html: string;
   spanIds: string[]; // IDs of spans present in this content
 }

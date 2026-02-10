@@ -1,15 +1,190 @@
 import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { type Browser, chromium } from 'playwright';
+import { type Browser, chromium, type Page as PlaywrightPage, type Route } from 'playwright';
 import { getContentArea } from '../device-profiles/profiles.js';
-import type { DeviceProfile, NormalizedContent, Page } from '../types.js';
+import type { DeviceProfile, EPUBContainer, NormalizedContent, Page } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const FONTS_DIR = join(__dirname, '../../fonts');
 
 let browser: Browser | null = null;
+
+const EPUB_VIRTUAL_ORIGIN = 'https://epub.local';
+
+function normalizeEpubPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function encodeEpubPathForUrl(path: string): string {
+  const normalized = normalizeEpubPath(path);
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+}
+
+function decodeVirtualUrlPath(pathname: string): string | null {
+  const rawPath = pathname.replace(/^\/+/, '');
+  if (!rawPath) {
+    return '';
+  }
+
+  let decodedPath = '';
+  try {
+    decodedPath = rawPath
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .join('/');
+  } catch {
+    return null;
+  }
+
+  const normalized = posix.normalize(decodedPath);
+  if (normalized === '..' || normalized.startsWith('../')) {
+    return null;
+  }
+
+  if (normalized === '.' || normalized === '/') {
+    return '';
+  }
+
+  return normalizeEpubPath(normalized);
+}
+
+function getChapterBaseHref(xhtmlPath: string): string {
+  const normalizedPath = normalizeEpubPath(xhtmlPath);
+  const slashIndex = normalizedPath.lastIndexOf('/');
+  const directoryPath = slashIndex >= 0 ? normalizedPath.slice(0, slashIndex + 1) : '';
+  const encodedDirectoryPath = encodeEpubPathForUrl(directoryPath);
+
+  if (!encodedDirectoryPath) {
+    return `${EPUB_VIRTUAL_ORIGIN}/`;
+  }
+
+  return `${EPUB_VIRTUAL_ORIGIN}/${encodedDirectoryPath}`;
+}
+
+function injectBaseHref(html: string, baseHref: string): string {
+  if (/<base\s/i.test(html)) {
+    return html;
+  }
+
+  return html.replace(/<head([^>]*)>/i, `<head$1>\n  <base href="${baseHref}">`);
+}
+
+function getContentType(path: string): string {
+  const extension = posix.extname(path).toLowerCase();
+
+  switch (extension) {
+    case '.xhtml':
+    case '.xml':
+    case '.opf':
+      return 'application/xhtml+xml';
+    case '.html':
+    case '.htm':
+      return 'text/html; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.js':
+    case '.mjs':
+      return 'text/javascript; charset=utf-8';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.ttf':
+      return 'font/ttf';
+    case '.otf':
+      return 'font/otf';
+    case '.woff':
+      return 'font/woff';
+    case '.woff2':
+      return 'font/woff2';
+    case '.smil':
+      return 'application/smil+xml';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function decodeVirtualUrlToPath(urlString: string): string | null {
+  try {
+    const url = new URL(urlString);
+    if (url.origin !== EPUB_VIRTUAL_ORIGIN) {
+      return null;
+    }
+    return decodeVirtualUrlPath(url.pathname);
+  } catch {
+    return null;
+  }
+}
+
+async function setupEpubResourceRouting(
+  page: PlaywrightPage,
+  container: EPUBContainer,
+  content: NormalizedContent,
+): Promise<void> {
+  const missingResources = new Set<string>();
+
+  const routeHandler = async (route: Route): Promise<void> => {
+    const requestUrl = route.request().url();
+    const requestPath = decodeVirtualUrlToPath(requestUrl);
+
+    if (requestPath === null) {
+      const warning = `invalid path in request URL: ${requestUrl}`;
+      if (!missingResources.has(warning)) {
+        missingResources.add(warning);
+        console.warn(`  Warning: ${warning} (chapter=${content.chapterId})`);
+      }
+      await route.fulfill({
+        status: 400,
+        contentType: 'text/plain; charset=utf-8',
+        body: `Invalid EPUB resource URL: ${requestUrl}`,
+      });
+      return;
+    }
+
+    try {
+      const resource = await container.readFile(requestPath);
+      await route.fulfill({
+        status: 200,
+        contentType: getContentType(requestPath),
+        body: resource,
+      });
+    } catch {
+      const referer = route.request().headers().referer;
+      const refererPath = referer ? decodeVirtualUrlToPath(referer) : null;
+      const warning =
+        `missing EPUB resource "${requestPath}"` +
+        ` (chapter=${content.chapterId}, source=${refererPath ?? referer ?? content.xhtmlPath})`;
+
+      if (!missingResources.has(warning)) {
+        missingResources.add(warning);
+        console.warn(`  Warning: ${warning}`);
+      }
+
+      await route.fulfill({
+        status: 404,
+        contentType: 'text/plain; charset=utf-8',
+        body: `Missing EPUB resource: ${requestPath}`,
+      });
+    }
+  };
+
+  await page.route(`${EPUB_VIRTUAL_ORIGIN}/**`, routeHandler);
+}
 
 /**
  * Load font file and convert to base64 data URI
@@ -91,6 +266,7 @@ export async function closeBrowser(): Promise<void> {
 export async function paginateContent(
   content: NormalizedContent,
   profile: DeviceProfile,
+  container?: EPUBContainer,
 ): Promise<Page[]> {
   if (!browser) {
     await initBrowser();
@@ -136,9 +312,15 @@ export async function paginateContent(
       }
     `;
 
+    const chapterBaseHref = getChapterBaseHref(content.xhtmlPath);
     const htmlWithColumns = content.html.replace('<style>', `<style>${fontFaceCSS}${columnCSS}`);
+    const htmlWithBase = injectBaseHref(htmlWithColumns, chapterBaseHref);
 
-    await page.setContent(htmlWithColumns, {
+    if (container) {
+      await setupEpubResourceRouting(page, container, content);
+    }
+
+    await page.setContent(htmlWithBase, {
       waitUntil: 'domcontentloaded',
     });
 
@@ -406,13 +588,14 @@ export async function paginateContent(
 export async function paginateChapters(
   contents: NormalizedContent[],
   profile: DeviceProfile,
+  container?: EPUBContainer,
 ): Promise<Page[]> {
   const allPages: Page[] = [];
   let globalPageIndex = 0;
 
   for (const content of contents) {
     console.log(`  Paginating chapter: ${content.chapterId}`);
-    const pages = await paginateContent(content, profile);
+    const pages = await paginateContent(content, profile, container);
 
     // Assign global page indices
     for (const page of pages) {

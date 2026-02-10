@@ -45,14 +45,18 @@ export async function normalizeXHTML(
     throw new Error(`No body element found in ${xhtmlPath}`);
   }
 
+  // Extract stylesheet links from source head so relative CSS references can be resolved in Chromium
+  const stylesheetHrefs = extractStylesheetHrefsFromRawHTML(html);
+
   // Generate normalized HTML
-  const normalizedHtml = generateNormalizedHTML(body, profile, chapterId);
+  const normalizedHtml = generateNormalizedHTML(body, profile, chapterId, stylesheetHrefs);
 
   // Collect span IDs that are present in this content
   const presentSpanIds = Array.from(fragmentToSpan.values());
 
   return {
     chapterId,
+    xhtmlPath,
     html: normalizedHtml,
     spanIds: presentSpanIds,
   };
@@ -83,39 +87,112 @@ function processNode(node: Node, fragmentToSpan: Map<string, string>): void {
 }
 
 /**
- * Find the body element in the document
+ * Find a direct child of the html element by tag name
  */
-function findBody(document: Document): Element | null {
+function findHtmlChild(document: Document, tagName: string): Element | null {
   for (const node of document.childNodes) {
-    if (isElement(node)) {
-      if (node.tagName === 'html') {
-        for (const child of node.childNodes) {
-          if (isElement(child) && child.tagName === 'body') {
-            return child;
-          }
-        }
+    if (!isElement(node) || node.tagName !== 'html') {
+      continue;
+    }
+
+    for (const child of node.childNodes) {
+      if (isElement(child) && child.tagName === tagName) {
+        return child;
       }
     }
   }
+
   return null;
+}
+
+/**
+ * Find the body element in the document
+ */
+function findBody(document: Document): Element | null {
+  return findHtmlChild(document, 'body');
+}
+
+/**
+ * Extract linked stylesheet href values from the raw XHTML head
+ * We parse raw HTML to avoid quirks where parse5 reparents head children into body.
+ */
+function extractStylesheetHrefsFromRawHTML(html: string): string[] {
+  const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+  if (!headMatch) {
+    return [];
+  }
+
+  const headContent = headMatch[1];
+  const hrefs: string[] = [];
+  const seen = new Set<string>();
+
+  const linkTagRegex = /<link\b[^>]*>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = linkTagRegex.exec(headContent)) !== null) {
+    const linkTag = match[0];
+    const rel = (getAttributeFromTag(linkTag, 'rel') || '').toLowerCase();
+    const href = getAttributeFromTag(linkTag, 'href');
+
+    if (!href) {
+      continue;
+    }
+
+    const relTokens = rel.split(/\s+/).filter(Boolean);
+    if (!relTokens.includes('stylesheet')) {
+      continue;
+    }
+
+    if (!seen.has(href)) {
+      hrefs.push(href);
+      seen.add(href);
+    }
+  }
+
+  return hrefs;
+}
+
+/**
+ * Extract an attribute value from a raw HTML tag
+ */
+function getAttributeFromTag(tag: string, attributeName: string): string | null {
+  const regex = new RegExp(
+    `\\b${attributeName}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'>]+))`,
+    'i',
+  );
+  const match = tag.match(regex);
+
+  if (!match) {
+    return null;
+  }
+
+  return match[2] ?? match[3] ?? match[4] ?? null;
 }
 
 /**
  * Generate normalized HTML with proper CSS for pagination
  */
-function generateNormalizedHTML(body: Element, profile: DeviceProfile, chapterId: string): string {
+function generateNormalizedHTML(
+  body: Element,
+  profile: DeviceProfile,
+  chapterId: string,
+  stylesheetHrefs: string[],
+): string {
   const css = generateProfileCSS(profile);
   const bodyContent = serializeChildren(body);
+  const stylesheetLinks = stylesheetHrefs
+    .map((href) => `  <link rel="stylesheet" href="${escapeAttr(href)}">`)
+    .join('\n');
 
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=${profile.viewportWidth}, height=${profile.viewportHeight}">
-  <style>${css}</style>
+${stylesheetLinks ? `${stylesheetLinks}\n` : ''}  <style>${css}</style>
 </head>
 <body>
-  <div class="cadence-content" data-chapter-id="${chapterId}">
+  <div class="cadence-content" data-chapter-id="${escapeAttr(chapterId)}">
     ${bodyContent}
   </div>
 </body>
@@ -142,8 +219,14 @@ function serializeNode(node: Node): string {
   }
 
   if (isElement(node)) {
-    // Skip script and style elements
-    if (node.tagName === 'script' || node.tagName === 'style') {
+    // Skip non-content elements
+    if (
+      node.tagName === 'script' ||
+      node.tagName === 'style' ||
+      node.tagName === 'title' ||
+      node.tagName === 'meta' ||
+      node.tagName === 'link'
+    ) {
       return '';
     }
 
@@ -157,8 +240,6 @@ function serializeNode(node: Node): string {
       'hr',
       'img',
       'input',
-      'link',
-      'meta',
       'param',
       'source',
       'track',

@@ -520,6 +520,7 @@ async function alignEPUB(
         // We need to create a proper NormalizedContent with the tagged HTML
         normalizedContents.push({
           chapterId: chapter.id,
+          xhtmlPath: chapter.href,
           html: generateNormalizedAlignedHTML(taggedHtml, profile, chapter.id),
           spanIds: expanded.map((r) => `${chapter.id}-sentence${r.id}`),
         });
@@ -535,7 +536,7 @@ async function alignEPUB(
       console.log('Step 5: Paginating content...');
       await initBrowser();
 
-      const paginatedPages = await paginateChapters(normalizedContents, profile);
+      const paginatedPages = await paginateChapters(normalizedContents, profile, container);
       console.log(`  Total pages: ${paginatedPages.length}`);
 
       const splitResult = splitSpansAcrossPages(allSpans, paginatedPages);
@@ -873,7 +874,7 @@ async function compileEPUB(
     console.log('Step 5: Paginating content...');
     await initBrowser();
 
-    const paginatedPages = await paginateChapters(normalizedContents, profile);
+    const paginatedPages = await paginateChapters(normalizedContents, profile, container);
     console.log(`  Total pages: ${paginatedPages.length}`);
 
     const splitResult = splitSpansAcrossPages(allSpans, paginatedPages);
