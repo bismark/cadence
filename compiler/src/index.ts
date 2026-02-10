@@ -834,12 +834,13 @@ async function compileEPUB(
     const opf = await parseOPF(container);
     console.log(`  Title: ${opf.title}`);
 
-    // Get spine files with media overlays
+    // Get linear spine XHTML files (includes content with and without media overlays)
     const spineFiles = getSpineXHTMLFiles(opf);
     console.log(`  Spine items: ${spineFiles.length}`);
 
     const chaptersWithSMIL = spineFiles.filter((f) => f.smilHref);
     console.log(`  Chapters with media overlays: ${chaptersWithSMIL.length}`);
+    console.log(`  Chapters without media overlays: ${spineFiles.length - chaptersWithSMIL.length}`);
 
     if (chaptersWithSMIL.length === 0) {
       throw new Error('No chapters with media overlays found in this EPUB');
@@ -864,7 +865,7 @@ async function compileEPUB(
     console.log('Step 4: Normalizing XHTML...');
     const normalizedContents: NormalizedContent[] = [];
 
-    for (const chapter of chaptersWithSMIL) {
+    for (const chapter of spineFiles) {
       console.log(`  Normalizing: ${chapter.href}`);
       const content = await normalizeXHTML(container, chapter.href, chapter.id, allSpans, profile);
       normalizedContents.push(content);
@@ -894,7 +895,7 @@ async function compileEPUB(
 
     // Build table of contents (chapter title -> starting page index)
     const toc: TocEntry[] = [];
-    for (const chapter of chaptersWithSMIL) {
+    for (const chapter of spineFiles) {
       const firstPage = pages.find((p) => p.chapterId === chapter.id);
       if (firstPage) {
         toc.push({
