@@ -18,6 +18,29 @@ Android app for playing Cadence bundles with synchronized text and audio.
 ./gradlew assembleDebug
 ```
 
+## Static analysis
+
+```bash
+# Run all player verification checks
+./scripts/verify.sh
+```
+
+`verify.sh` exits non-zero if any check fails, including dependency-analysis violations.
+
+Equivalent individual commands:
+
+```bash
+./gradlew :app:compileDebugKotlin
+./gradlew detekt
+./gradlew :app:lintDebug
+./gradlew buildHealth
+```
+
+Reports:
+- `app/build/reports/detekt/detekt.html`
+- `app/build/reports/lint-results-debug.html`
+- `build/reports/dependency-analysis/build-health-report.txt`
+
 ## Usage
 
 1. Compile an EPUB with the Cadence compiler:
@@ -45,7 +68,7 @@ The folder should contain:
 - `meta.json`
 - `spans.jsonl`
 - `pages/*.json`
-- `audio/*.mp3`
+- `audio.opus`
 
 ## Architecture
 
