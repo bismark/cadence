@@ -4,7 +4,8 @@ import android.content.Context
 import android.graphics.Typeface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -18,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import com.cadence.player.data.Page
@@ -131,25 +133,63 @@ fun PageRenderer(
             .fillMaxSize()
             .background(Color.White)
             .pointerInput(page.pageId) {
-                detectTapGestures { offset ->
-                    // Convert tap position to content coordinates (subtract margins)
-                    val contentX = offset.x - marginLeft
-                    val contentY = offset.y - marginTop
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val startPosition = down.position
+                    val startTimeMs = down.uptimeMillis
 
-                    // Find if tap is within any span rectangle
-                    val tappedSpanId = tapHitTestStats.measure {
-                        page.spanRects.find { spanRect ->
-                            spanRect.rects.any { rect ->
-                                contentX >= rect.x && contentX <= rect.x + rect.width &&
-                                    contentY >= rect.y && contentY <= rect.y + rect.height
+                    // Stricter-than-default tap detection to avoid swipe/drag false positives.
+                    val maxTapMovementPx = viewConfiguration.touchSlop * 0.5f
+                    val maxTapDurationMs = 220L
+                    var rejected = false
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.any { it.id != down.id && it.pressed }) {
+                            rejected = true
+                        }
+
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        val movedDistancePx = (change.position - startPosition).getDistance()
+
+                        if (movedDistancePx > maxTapMovementPx) {
+                            rejected = true
+                        }
+
+                        if (change.uptimeMillis - startTimeMs > maxTapDurationMs) {
+                            rejected = true
+                        }
+
+                        if (change.changedToUpIgnoreConsumed()) {
+                            if (!rejected) {
+                                val offset = change.position
+
+                                // Convert tap position to content coordinates (subtract margins)
+                                val contentX = offset.x - marginLeft
+                                val contentY = offset.y - marginTop
+
+                                // Find if tap is within any span rectangle
+                                val tappedSpanId = tapHitTestStats.measure {
+                                    page.spanRects.find { spanRect ->
+                                        spanRect.rects.any { rect ->
+                                            contentX >= rect.x && contentX <= rect.x + rect.width &&
+                                                contentY >= rect.y && contentY <= rect.y + rect.height
+                                        }
+                                    }?.spanId
+                                }
+
+                                if (tappedSpanId != null) {
+                                    onSpanTap(tappedSpanId)
+                                } else {
+                                    onBackgroundTap()
+                                }
                             }
-                        }?.spanId
-                    }
+                            break
+                        }
 
-                    if (tappedSpanId != null) {
-                        onSpanTap(tappedSpanId)
-                    } else {
-                        onBackgroundTap()
+                        if (!change.pressed) {
+                            break
+                        }
                     }
                 }
             }
