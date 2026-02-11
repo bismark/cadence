@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, posix, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import {
   expandEmptySentenceRanges,
@@ -141,7 +142,18 @@ program
     }
   });
 
-program.parse();
+function isCliEntrypoint(): boolean {
+  const entrypointArg = process.argv[1];
+  if (!entrypointArg) {
+    return false;
+  }
+
+  return import.meta.url === pathToFileURL(entrypointArg).href;
+}
+
+if (isCliEntrypoint()) {
+  program.parse();
+}
 
 const OFFSET_SEARCH_WINDOW_SIZE = 5000;
 
@@ -159,6 +171,8 @@ const BREAK_PROPERTIES = new Set<string>([
   'break-after',
   ...BREAK_PROPERTY_ALIASES.keys(),
 ]);
+
+const BREAK_CANONICAL_PROPERTIES = new Set<string>(['break-before', 'break-after']);
 
 function normalizeEpubPath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\/+/, '');
@@ -434,7 +448,14 @@ function filterBreakDeclarations(block: string): string[] {
       continue;
     }
 
-    const canonicalDeclaration = `${property}: ${normalizedValue};`;
+    const normalizedCanonicalValue = BREAK_CANONICAL_PROPERTIES.has(property)
+      ? toColumnBreakValue(value)
+      : normalizedValue;
+    if (!normalizedCanonicalValue) {
+      continue;
+    }
+
+    const canonicalDeclaration = `${property}: ${normalizedCanonicalValue};`;
     if (!seen.has(canonicalDeclaration)) {
       seen.add(canonicalDeclaration);
       filtered.push(canonicalDeclaration);
@@ -503,7 +524,7 @@ function extractBreakRulesFromCssContent(css: string): string[] {
   return rules;
 }
 
-function extractBreakRulesFromCss(css: string): string[] {
+export function extractBreakRulesFromCss(css: string): string[] {
   const withoutComments = stripCssComments(css);
   return extractBreakRulesFromCssContent(withoutComments);
 }
