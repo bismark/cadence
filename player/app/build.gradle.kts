@@ -79,24 +79,37 @@ tasks.named("check").configure {
 
 dependencies {
     // Core Android
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
+    implementation("androidx.activity:activity:1.8.1")
     implementation("androidx.activity:activity-compose:1.8.1")
+    implementation("androidx.core:core:1.12.0")
+    implementation("androidx.lifecycle:lifecycle-common:2.6.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel:2.6.2")
 
     // Compose
     implementation(platform("androidx.compose:compose-bom:2023.10.01"))
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.foundation:foundation-layout")
+    implementation("androidx.compose.runtime:runtime")
     implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-geometry")
     implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.ui:ui-text")
+    implementation("androidx.compose.ui:ui-unit")
     implementation("androidx.compose.material3:material3")
 
     // Media playback (no GMS needed)
+    implementation("androidx.media3:media3-common:1.2.0")
     implementation("androidx.media3:media3-exoplayer:1.2.0")
+
+    // Kotlin runtime
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.20")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-core:1.6.0")
 
     // JSON parsing
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    debugRuntimeOnly("androidx.compose.ui:ui-test-manifest")
 }
