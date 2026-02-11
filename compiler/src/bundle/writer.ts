@@ -3,7 +3,17 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import archiver from 'archiver';
 import { applyAudioOffsets, concatenateAudio } from '../audio/concat.js';
-import type { BundleMeta, EPUBContainer, Page, Span, SpanEntry, TocEntry } from '../types.js';
+import { compactPageStyles } from './compact-page-styles.js';
+import type {
+  BundleMeta,
+  EPUBContainer,
+  Page,
+  SerializedPage,
+  Span,
+  SpanEntry,
+  TextStyle,
+  TocEntry,
+} from '../types.js';
 
 /**
  * Write the compiled bundle to a ZIP file
@@ -44,8 +54,8 @@ export async function writeBundle(
     // Write spans.jsonl (with updated timestamps)
     await writeSpansJsonl(tempDir, spans, spanToPageIndex);
 
-    // Write pages
-    await writePages(tempDir, pages);
+    // Write styles + pages
+    await writeStylesAndPages(tempDir, pages);
 
     // Create ZIP archive
     await createZipArchive(tempDir, outputPath);
@@ -64,7 +74,7 @@ export async function writeBundle(
  */
 async function writeMetaJson(dir: string, meta: BundleMeta): Promise<void> {
   const metaPath = join(dir, 'meta.json');
-  await writeFile(metaPath, JSON.stringify(meta, null, 2));
+  await writeFile(metaPath, JSON.stringify(meta));
 }
 
 /**
@@ -72,7 +82,7 @@ async function writeMetaJson(dir: string, meta: BundleMeta): Promise<void> {
  */
 async function writeTocJson(dir: string, toc: TocEntry[]): Promise<void> {
   const tocPath = join(dir, 'toc.json');
-  await writeFile(tocPath, JSON.stringify(toc, null, 2));
+  await writeFile(tocPath, JSON.stringify(toc));
 }
 
 /**
@@ -101,16 +111,33 @@ async function writeSpansJsonl(
 }
 
 /**
- * Write page JSON files
+ * Write styles.json file (shared text style table)
  */
-async function writePages(dir: string, pages: Page[]): Promise<void> {
+async function writeStylesJson(dir: string, styles: TextStyle[]): Promise<void> {
+  const stylesPath = join(dir, 'styles.json');
+  await writeFile(stylesPath, JSON.stringify(styles));
+}
+
+/**
+ * Write page JSON files (serialized with styleId references)
+ */
+async function writePages(dir: string, pages: SerializedPage[]): Promise<void> {
   const pagesDir = join(dir, 'pages');
   await mkdir(pagesDir, { recursive: true });
 
   for (const page of pages) {
     const pagePath = join(pagesDir, `${page.pageId}.json`);
-    await writeFile(pagePath, JSON.stringify(page, null, 2));
+    await writeFile(pagePath, JSON.stringify(page));
   }
+}
+
+/**
+ * Write styles table and compact pages
+ */
+async function writeStylesAndPages(dir: string, pages: Page[]): Promise<void> {
+  const compacted = compactPageStyles(pages);
+  await writeStylesJson(dir, compacted.styles);
+  await writePages(dir, compacted.pages);
 }
 
 /**
@@ -180,8 +207,8 @@ export async function writeBundleUncompressed(
   // Write spans.jsonl (with updated timestamps)
   await writeSpansJsonl(outputDir, spans, spanToPageIndex);
 
-  // Write pages
-  await writePages(outputDir, pages);
+  // Write styles + pages
+  await writeStylesAndPages(outputDir, pages);
 
   console.log(`Bundle written to: ${outputDir}`);
 }

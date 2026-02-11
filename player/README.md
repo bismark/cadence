@@ -83,6 +83,7 @@ The app looks for bundles in these locations:
 The folder should contain:
 - `meta.json`
 - `spans.jsonl`
+- `styles.json`
 - `pages/*.json`
 - `audio.opus`
 

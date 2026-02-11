@@ -76,6 +76,14 @@ export interface TextRun {
 }
 
 /**
+ * Serialized text run in bundle pages/*.json
+ * Uses styleId to reference the shared styles table in styles.json
+ */
+export interface SerializedTextRun extends Omit<TextRun, 'style'> {
+  styleId: number;
+}
+
+/**
  * A rendered page with positioned text and spans
  */
 export interface Page {
@@ -88,6 +96,13 @@ export interface Page {
   spanRects: PageSpanRect[];
   firstSpanId: string;
   lastSpanId: string;
+}
+
+/**
+ * Serialized page shape in bundle pages/*.json
+ */
+export interface SerializedPage extends Omit<Page, 'textRuns'> {
+  textRuns: SerializedTextRun[];
 }
 
 /**

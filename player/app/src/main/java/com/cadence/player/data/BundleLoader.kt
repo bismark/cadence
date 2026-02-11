@@ -2,9 +2,35 @@ package com.cadence.player.data
 
 import android.content.Context
 import com.cadence.player.perf.PerfLog
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.zip.ZipFile
+
+@Serializable
+private data class SerializedTextRun(
+    val text: String,
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float,
+    val baselineY: Float,
+    val spanId: String? = null,
+    val styleId: Int
+)
+
+@Serializable
+private data class SerializedPage(
+    val pageId: String,
+    val chapterId: String,
+    val pageIndex: Int,
+    val width: Int,
+    val height: Int,
+    val textRuns: List<SerializedTextRun>,
+    val spanRects: List<PageSpanRect>,
+    val firstSpanId: String,
+    val lastSpanId: String
+)
 
 /**
  * Loads Cadence bundles from disk
@@ -42,6 +68,13 @@ object BundleLoader {
             .map { json.decodeFromString<SpanEntry>(it) }
         val spansNs = if (PerfLog.enabled) System.nanoTime() - spansStartNs else 0L
 
+        // Load shared styles
+        val stylesStartNs = if (PerfLog.enabled) System.nanoTime() else 0L
+        val stylesFile = File(bundleDir, "styles.json")
+        require(stylesFile.exists()) { "styles.json not found in bundle" }
+        val styles = json.decodeFromString<List<TextStyle>>(stylesFile.readText())
+        val stylesNs = if (PerfLog.enabled) System.nanoTime() - stylesStartNs else 0L
+
         // Load pages
         val pagesStartNs = if (PerfLog.enabled) System.nanoTime() else 0L
         val pagesDir = File(bundleDir, "pages")
@@ -49,7 +82,10 @@ object BundleLoader {
 
         val pages = pagesDir.listFiles()
             ?.filter { it.extension == "json" }
-            ?.map { json.decodeFromString<Page>(it.readText()) }
+            ?.map { file ->
+                val serializedPage = json.decodeFromString<SerializedPage>(file.readText())
+                serializedPage.toPage(styles, file.name)
+            }
             ?.sortedBy { it.pageIndex }
             ?: emptyList()
         val pagesNs = if (PerfLog.enabled) System.nanoTime() - pagesStartNs else 0L
@@ -75,11 +111,43 @@ object BundleLoader {
         if (PerfLog.enabled) {
             val totalNs = System.nanoTime() - loadStartNs
             PerfLog.d(
-                "bundle load pages=${pages.size} spans=${spans.size} resolve=${PerfLog.formatNs(resolveNs)}ms meta=${PerfLog.formatNs(metaNs)}ms spans=${PerfLog.formatNs(spansNs)}ms pages=${PerfLog.formatNs(pagesNs)}ms toc=${PerfLog.formatNs(tocNs)}ms total=${PerfLog.formatNs(totalNs)}ms"
+                "bundle load pages=${pages.size} spans=${spans.size} resolve=${PerfLog.formatNs(resolveNs)}ms meta=${PerfLog.formatNs(metaNs)}ms spans=${PerfLog.formatNs(spansNs)}ms styles=${PerfLog.formatNs(stylesNs)}ms pages=${PerfLog.formatNs(pagesNs)}ms toc=${PerfLog.formatNs(tocNs)}ms total=${PerfLog.formatNs(totalNs)}ms"
             )
         }
 
         return bundle
+    }
+
+    private fun SerializedPage.toPage(styles: List<TextStyle>, sourceFileName: String): Page {
+        val resolvedTextRuns = textRuns.map { run ->
+            val style = styles.getOrNull(run.styleId)
+                ?: throw IllegalArgumentException(
+                    "Invalid styleId ${run.styleId} in page file $sourceFileName"
+                )
+
+            TextRun(
+                text = run.text,
+                x = run.x,
+                y = run.y,
+                width = run.width,
+                height = run.height,
+                baselineY = run.baselineY,
+                spanId = run.spanId,
+                style = style
+            )
+        }
+
+        return Page(
+            pageId = pageId,
+            chapterId = chapterId,
+            pageIndex = pageIndex,
+            width = width,
+            height = height,
+            textRuns = resolvedTextRuns,
+            spanRects = spanRects,
+            firstSpanId = firstSpanId,
+            lastSpanId = lastSpanId
+        )
     }
 
     private fun resolveBundleDir(context: Context, bundlePath: String): File {

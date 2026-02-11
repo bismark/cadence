@@ -6,7 +6,14 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { getProfile } from './device-profiles/profiles.js';
-import type { BundleMeta, DeviceProfile, Page, SpanEntry } from './types.js';
+import type {
+  BundleMeta,
+  DeviceProfile,
+  Page,
+  SerializedPage,
+  SpanEntry,
+  TextStyle,
+} from './types.js';
 
 interface BundleData {
   meta: BundleMeta;
@@ -29,17 +36,52 @@ export async function loadBundle(bundlePath: string): Promise<BundleData> {
     .split('\n')
     .map((line) => JSON.parse(line));
 
-  // Load all pages
+  // Load shared styles table
+  const stylesJson = await readFile(join(bundlePath, 'styles.json'), 'utf-8');
+  const styles: TextStyle[] = JSON.parse(stylesJson);
+
+  // Load all pages (serialized with styleId references)
   const pagesDir = join(bundlePath, 'pages');
   const pageFiles = await readdir(pagesDir);
   const pages: Page[] = [];
 
   for (const file of pageFiles) {
-    if (file.endsWith('.json')) {
-      const pageJson = await readFile(join(pagesDir, file), 'utf-8');
-      const page: Page = JSON.parse(pageJson);
-      pages.push(page);
+    if (!file.endsWith('.json')) {
+      continue;
     }
+
+    const pageJson = await readFile(join(pagesDir, file), 'utf-8');
+    const page: SerializedPage = JSON.parse(pageJson);
+
+    const textRuns = page.textRuns.map((run) => {
+      const style = styles[run.styleId];
+      if (!style) {
+        throw new Error(`Invalid styleId ${run.styleId} in page file ${file}`);
+      }
+
+      return {
+        text: run.text,
+        x: run.x,
+        y: run.y,
+        width: run.width,
+        height: run.height,
+        baselineY: run.baselineY,
+        spanId: run.spanId,
+        style,
+      };
+    });
+
+    pages.push({
+      pageId: page.pageId,
+      chapterId: page.chapterId,
+      pageIndex: page.pageIndex,
+      width: page.width,
+      height: page.height,
+      textRuns,
+      spanRects: page.spanRects,
+      firstSpanId: page.firstSpanId,
+      lastSpanId: page.lastSpanId,
+    });
   }
 
   // Sort by pageIndex

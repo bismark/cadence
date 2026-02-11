@@ -1,27 +1,27 @@
 # Cadence Bundle Format
 
-A Cadence bundle is a directory (or ZIP file) containing precomputed layout data and audio for synchronized audiobook playback.
+A Cadence bundle is a directory (or ZIP) containing precomputed page geometry and synchronized audio timing.
 
 ## Directory Structure
 
-```
+```text
 book.bundle/
 ├── meta.json           # Bundle metadata
-├── spans.jsonl         # Timing data for each text segment (one per line)
-├── audio.opus          # Single concatenated audio file (OGG Opus @ 48kbps)
+├── spans.jsonl         # Timing data (one JSON object per line)
+├── styles.json         # Shared text style table (indexed by styleId)
+├── audio.opus          # Single concatenated audio file (OGG Opus)
 └── pages/
-    ├── chapter1_p0001.json
-    ├── chapter1_p0002.json
-    └── ...             # One file per page with layout data
+    ├── *.json          # One file per page (filename not semantically significant)
 ```
+
+> Note: page filenames may differ by pipeline (`chapter_p0001.json` vs `0.json` etc.).
+> The player reads all page JSON files and orders by each page's `pageIndex` field.
 
 ## meta.json
 
-Bundle metadata and summary statistics.
-
 ```json
 {
-  "bundleVersion": "1.0",
+  "bundleVersion": "1.0.0",
   "bundleId": "urn:isbn:9780123456789",
   "profile": "supernote-manta-a5x2",
   "title": "Moby Dick",
@@ -31,56 +31,71 @@ Bundle metadata and summary statistics.
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
-| `bundleVersion` | string | Bundle format version |
-| `bundleId` | string | Stable book identifier (from `dc:identifier` or SHA256 hash) |
+|---|---|---|
+| `bundleVersion` | string | Bundle format version string |
+| `bundleId` | string | Stable book identifier (from `dc:identifier` or fallback hash) |
 | `profile` | string | Device profile used for layout |
-| `title` | string | Book title from EPUB metadata |
+| `title` | string | Book title |
 | `pages` | number | Total page count |
-| `spans` | number | Total span (audio segment) count |
-
-### bundleId Generation
-
-The `bundleId` uniquely identifies a book for position persistence:
-1. If EPUB has `dc:identifier` (often ISBN): use it directly
-2. Otherwise: SHA256 hash of `title|spine_ids` (first 16 chars)
+| `spans` | number | Total span count |
 
 ## spans.jsonl
 
-One JSON object per line, each representing a synchronized text+audio segment. Lines are sorted by `clipBeginMs` for efficient binary search.
+One JSON object per line, sorted by `clipBeginMs`.
 
 ```jsonl
-{"id":"span_ch1_0","clipBeginMs":0,"clipEndMs":3456.789,"pageIndex":0}
-{"id":"span_ch1_1","clipBeginMs":3456.789,"clipEndMs":7890.123,"pageIndex":0}
-{"id":"span_ch1_2","clipBeginMs":7890.123,"clipEndMs":12345.678,"pageIndex":1}
+{"id":"s0","clipBeginMs":0,"clipEndMs":3456.789,"pageIndex":0}
+{"id":"s1","clipBeginMs":3456.789,"clipEndMs":7890.123,"pageIndex":0}
+{"id":"s2","clipBeginMs":7890.123,"clipEndMs":12345.678,"pageIndex":1}
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Unique span identifier (matches `spanId` in page data) |
-| `clipBeginMs` | number | Start time in `audio.opus` (milliseconds, inclusive) |
-| `clipEndMs` | number | End time in `audio.opus` (milliseconds, exclusive) |
-| `pageIndex` | number | Global page index where this span appears |
+|---|---|---|
+| `id` | string | Internal span identifier (matches page `spanId` references) |
+| `clipBeginMs` | number | Start time in `audio.opus` (inclusive) |
+| `clipEndMs` | number | End time in `audio.opus` (exclusive) |
+| `pageIndex` | number | Global page index where span first appears |
 
-### Notes
+Notes:
+- Span IDs are compiler-assigned internal IDs (compact, deterministic per build).
+- Times are global offsets into the single `audio.opus` file.
 
-- Times are **global** offsets into the single `audio.opus` file
-- Adjacent spans have touching boundaries (no gaps): span N's `clipEndMs` equals span N+1's `clipBeginMs`
-- `pageIndex` refers to the page where the span's text is rendered
+## styles.json
 
-## audio.opus
+Shared style table for all pages.
 
-Single concatenated audio file containing all chapter audio in spine order.
+```json
+[
+  {
+    "fontFamily": "\"Noto Serif\", serif",
+    "fontSize": 48,
+    "fontWeight": 400,
+    "fontStyle": "normal",
+    "inkGray": 0
+  },
+  {
+    "fontFamily": "\"Noto Serif\", serif",
+    "fontSize": 72,
+    "fontWeight": 700,
+    "fontStyle": "normal",
+    "inkGray": 0
+  }
+]
+```
 
-- **Format**: OGG container with Opus codec
-- **Bitrate**: 48kbps (optimized for speech)
-- **Channels**: Mono or stereo (preserves source)
+Each entry is a `TextStyle` object:
 
-The compiler concatenates individual chapter audio files and adjusts span timestamps accordingly.
+| Field | Type | Description |
+|---|---|---|
+| `fontFamily` | string | CSS font-family string captured from layout engine |
+| `fontSize` | number | Font size in px |
+| `fontWeight` | number | Numeric weight (e.g. 400, 700) |
+| `fontStyle` | string | `"normal"` or `"italic"` |
+| `inkGray` | number | Quantized e-ink gray (0=black, 255=white) |
 
 ## pages/*.json
 
-One file per page containing precomputed layout data.
+Each page file contains geometry and text runs.
 
 ```json
 {
@@ -89,108 +104,85 @@ One file per page containing precomputed layout data.
   "pageIndex": 0,
   "width": 1404,
   "height": 1872,
-  "textRuns": [...],
-  "spanRects": [...],
-  "firstSpanId": "span_ch1_0",
-  "lastSpanId": "span_ch1_5"
+  "textRuns": [
+    {
+      "text": "Call me Ishmael.",
+      "x": 72,
+      "y": 150,
+      "width": 180,
+      "height": 24,
+      "baselineY": 169,
+      "spanId": "s0",
+      "styleId": 0
+    }
+  ],
+  "spanRects": [
+    {
+      "spanId": "s0",
+      "rects": [
+        { "x": 72, "y": 150, "width": 180, "height": 24 }
+      ]
+    }
+  ],
+  "firstSpanId": "s0",
+  "lastSpanId": "s0"
 }
 ```
 
+### Page fields
+
 | Field | Type | Description |
-|-------|------|-------------|
-| `pageId` | string | Unique page identifier |
-| `chapterId` | string | Chapter this page belongs to |
-| `pageIndex` | number | Global page index (0-based) |
-| `width` | number | Page width in pixels |
-| `height` | number | Page height in pixels |
-| `textRuns` | TextRun[] | Positioned text segments |
-| `spanRects` | PageSpanRect[] | Highlight rectangles for each span |
-| `firstSpanId` | string | First span ID on this page (for navigation) |
-| `lastSpanId` | string | Last span ID on this page |
+|---|---|---|
+| `pageId` | string | Page identifier |
+| `chapterId` | string | Source chapter identifier |
+| `pageIndex` | number | Global 0-based index |
+| `width` | number | Content width in px |
+| `height` | number | Content height in px |
+| `textRuns` | TextRun[] | Positioned text runs |
+| `spanRects` | PageSpanRect[] | Highlight rectangles per span |
+| `firstSpanId` | string | First span visible on page |
+| `lastSpanId` | string | Last span visible on page |
 
 ### TextRun
 
-A positioned piece of text on the page.
-
-```json
-{
-  "text": "Call me Ishmael.",
-  "x": 72,
-  "y": 150,
-  "width": 180,
-  "height": 24,
-  "spanId": "span_ch1_0",
-  "style": {
-    "fontFamily": "serif",
-    "fontSize": 18,
-    "fontWeight": 400,
-    "fontStyle": "normal",
-    "color": "#000000"
-  }
-}
-```
-
 | Field | Type | Description |
-|-------|------|-------------|
-| `text` | string | The text content |
-| `x` | number | Left position in pixels |
-| `y` | number | Top position in pixels |
-| `width` | number | Width in pixels |
-| `height` | number | Height in pixels |
-| `spanId` | string? | Span ID if part of synchronized segment |
-| `style` | TextStyle | Font and color information |
+|---|---|---|
+| `text` | string | Text content |
+| `x` | number | Left position (px) |
+| `y` | number | Top position (px) |
+| `width` | number | Width (px) |
+| `height` | number | Height (px) |
+| `baselineY` | number | Baseline Y in page-local coordinates |
+| `spanId` | string? | Span ID if synchronized |
+| `styleId` | number | Index into `styles.json` |
 
 ### PageSpanRect
 
-Highlight rectangles for a span on this page. A span may have multiple rectangles if the text wraps across lines.
-
-```json
-{
-  "spanId": "span_ch1_0",
-  "rects": [
-    {"x": 72, "y": 150, "width": 180, "height": 24},
-    {"x": 72, "y": 174, "width": 120, "height": 24}
-  ]
-}
-```
-
 | Field | Type | Description |
-|-------|------|-------------|
+|---|---|---|
 | `spanId` | string | Span identifier |
-| `rects` | Rect[] | One or more rectangles covering the span's text |
+| `rects` | Rect[] | One or more rectangles covering the span |
 
 ### Rect
 
-A simple rectangle.
+| Field | Type | Description |
+|---|---|---|
+| `x` | number | Left |
+| `y` | number | Top |
+| `width` | number | Width |
+| `height` | number | Height |
 
-```json
-{"x": 72, "y": 150, "width": 180, "height": 24}
-```
+## audio.opus
 
-## Design Rationale
+Single concatenated audio file for the whole book.
 
-### Precomputed Layout
-All text positioning and highlight geometry is computed at compile time using a headless browser (Playwright). This allows the player to render without a WebView or complex text layout engine—critical for fast performance on e-ink devices.
+- Format: OGG Opus
+- Timestamps in `spans.jsonl` are offsets into this file
 
-### Single Audio File
-Chapter audio files are concatenated into one `audio.opus` file with adjusted timestamps. This eliminates complexity in the player for managing multiple audio sources and seeking across chapters.
+## Player Loading Sequence
 
-### JSONL for Spans
-Using newline-delimited JSON allows:
-- Streaming/line-by-line parsing
-- Binary search by timestamp (lines are sorted)
-- Easy debugging (human-readable)
-
-### OGG Opus Audio
-- Opus provides excellent quality at 48kbps for speech
-- Native Android support since API 21 (Android 5.0)
-- Open format with no licensing issues
-
-## Player Usage
-
-1. Parse `meta.json` to get page/span counts
-2. Load `spans.jsonl` into memory (or use streaming with binary search)
-3. Load pages on demand from `pages/*.json`
-4. Play `audio.opus` and poll position at ~20Hz
-5. Binary search spans to find active span at current position
-6. Draw page text and highlight rectangles for active span
+1. Read `meta.json`.
+2. Read `spans.jsonl`.
+3. Read `styles.json`.
+4. Read `pages/*.json` and resolve each `styleId` against the styles table.
+5. Play `audio.opus` and find active span via timestamp lookup.

@@ -17,6 +17,8 @@ import {
   tagSentencesInXhtml,
   transcribeMultiple,
 } from './align/index.js';
+import { compactPageStyles } from './bundle/compact-page-styles.js';
+import { compactSpanIds } from './bundle/compact-span-ids.js';
 import { writeBundle, writeBundleUncompressed } from './bundle/writer.js';
 import { getProfile, profiles } from './device-profiles/profiles.js';
 import { openEPUB } from './epub/container.js';
@@ -36,6 +38,7 @@ import type {
   DeviceProfile,
   EPUBContainer,
   NormalizedContent,
+  Page,
   Span,
   TocEntry,
 } from './types.js';
@@ -960,8 +963,9 @@ async function alignEPUB(
       console.log(`  Total pages: ${paginatedPages.length}`);
 
       const splitResult = splitSpansAcrossPages(allSpans, paginatedPages);
-      const spans = splitResult.spans;
-      const pages = splitResult.pages;
+      const compactResult = compactSpanIds(splitResult.spans, splitResult.pages);
+      const spans = compactResult.spans;
+      const pages = compactResult.pages;
 
       if (splitResult.splitSpanCount > 0) {
         console.log(
@@ -1173,7 +1177,7 @@ async function writeBundleAligned(
   outputPath: string,
   meta: BundleMeta,
   spans: Span[],
-  pages: any[],
+  pages: Page[],
   spanToPageIndex: Map<string, number>,
   toc: TocEntry[],
   tracks: { path: string; duration: number; title?: string }[],
@@ -1224,7 +1228,7 @@ async function writeBundleAlignedUncompressed(
   outputDir: string,
   meta: BundleMeta,
   spans: Span[],
-  pages: any[],
+  pages: Page[],
   spanToPageIndex: Map<string, number>,
   toc: TocEntry[],
   tracks: { path: string; duration: number; title?: string }[],
@@ -1251,10 +1255,10 @@ async function writeBundleAlignedUncompressed(
   applyAudioOffsets(spans, concatResult.offsets);
 
   // Write meta.json
-  await writeFile(join(outputDir, 'meta.json'), JSON.stringify(meta, null, 2));
+  await writeFile(join(outputDir, 'meta.json'), JSON.stringify(meta));
 
   // Write toc.json
-  await writeFile(join(outputDir, 'toc.json'), JSON.stringify(toc, null, 2));
+  await writeFile(join(outputDir, 'toc.json'), JSON.stringify(toc));
 
   // Write spans.jsonl (same format as compile command)
   const spansContent = spans
@@ -1270,12 +1274,14 @@ async function writeBundleAlignedUncompressed(
     .join('\n');
   await writeFile(join(outputDir, 'spans.jsonl'), spansContent);
 
-  // Write pages
-  for (const page of pages) {
-    await writeFile(
-      join(outputDir, 'pages', `${page.pageIndex}.json`),
-      JSON.stringify(page, null, 2),
-    );
+  const compactedPages = compactPageStyles(pages);
+
+  // Write shared styles table
+  await writeFile(join(outputDir, 'styles.json'), JSON.stringify(compactedPages.styles));
+
+  // Write pages (with styleId references)
+  for (const page of compactedPages.pages) {
+    await writeFile(join(outputDir, 'pages', `${page.pageIndex}.json`), JSON.stringify(page));
   }
 }
 
@@ -1354,8 +1360,9 @@ async function compileEPUB(
     console.log(`  Total pages: ${paginatedPages.length}`);
 
     const splitResult = splitSpansAcrossPages(allSpans, paginatedPages);
-    const spans = splitResult.spans;
-    const pages = splitResult.pages;
+    const compactResult = compactSpanIds(splitResult.spans, splitResult.pages);
+    const spans = compactResult.spans;
+    const pages = compactResult.pages;
 
     if (splitResult.splitSpanCount > 0) {
       console.log(
