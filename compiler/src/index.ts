@@ -42,6 +42,10 @@ import type {
   Span,
   TocEntry,
 } from './types.js';
+import {
+  logSmilToDomValidationResult,
+  validateSmilToDomTargets,
+} from './validation/smil-targets.js';
 import { logValidationResult, validateCompilationResult } from './validation.js';
 
 const program = new Command();
@@ -58,10 +62,11 @@ program
   .option('-o, --output <path>', 'Output bundle path (default: <input>.bundle.zip)')
   .option('-p, --profile <name>', `Device profile (${Object.keys(profiles).join(', ')})`)
   .option('--no-zip', 'Output uncompressed bundle directory instead of ZIP')
+  .option('--strict', 'Fail compilation when SMIL target validation finds issues')
   .action(async (options) => {
     try {
       const profile = getProfile(options.profile);
-      await compileEPUB(options.input, options.output, options.zip, profile);
+      await compileEPUB(options.input, options.output, options.zip, profile, options.strict ?? false);
     } catch (err) {
       console.error('Compilation failed:', err);
       process.exit(1);
@@ -1293,6 +1298,7 @@ async function compileEPUB(
   outputPath: string | undefined,
   createZip: boolean,
   profile: DeviceProfile,
+  strictSmilValidation: boolean,
 ): Promise<void> {
   const resolvedInput = resolve(inputPath);
   const defaultOutput = resolvedInput.replace(/\.epub$/i, '.bundle.zip');
@@ -1303,6 +1309,9 @@ async function compileEPUB(
   console.log(`Input:  ${resolvedInput}`);
   console.log(`Output: ${resolvedOutput}`);
   console.log(`Profile: ${profile.name}`);
+  if (strictSmilValidation) {
+    console.log('Strict SMIL target validation: enabled');
+  }
   console.log('');
 
   // Step 1: Open EPUB
@@ -1358,6 +1367,18 @@ async function compileEPUB(
 
     const paginatedPages = await paginateChapters(normalizedContents, profile, container);
     console.log(`  Total pages: ${paginatedPages.length}`);
+
+    console.log('Step 5b: Validating SMIL-to-DOM target mapping...');
+    const smilTargetValidation = validateSmilToDomTargets(allSpans, paginatedPages, normalizedContents);
+    logSmilToDomValidationResult(smilTargetValidation);
+
+    if (strictSmilValidation && smilTargetValidation.issues.length > 0) {
+      throw new Error(
+        `Strict SMIL validation failed: ` +
+          `${smilTargetValidation.unresolvedTextRefCount} unresolved textRef target(s), ` +
+          `${smilTargetValidation.timedSpansWithoutGeometryCount} timed span(s) with no mapped geometry/text`,
+      );
+    }
 
     const splitResult = splitSpansAcrossPages(allSpans, paginatedPages);
     const compactResult = compactSpanIds(splitResult.spans, splitResult.pages);

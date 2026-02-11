@@ -1,3 +1,4 @@
+import { posix } from 'node:path';
 import * as parse5 from 'parse5';
 import { generateProfileCSS } from '../device-profiles/profiles.js';
 import type { DeviceProfile, EPUBContainer, NormalizedContent, Span } from '../types.js';
@@ -23,17 +24,31 @@ export async function normalizeXHTML(
   // Parse the XHTML
   const document = parse5.parse(html);
 
-  // Build a map of fragment IDs to span IDs for this chapter
+  // Build a map of fragment IDs to span IDs for this chapter.
+  // Important: only map spans whose textRef path matches this chapter XHTML path.
+  const chapterPath = normalizeEpubPath(xhtmlPath);
   const fragmentToSpan = new Map<string, string>();
   for (const span of spans) {
-    if (span.chapterId === chapterId) {
-      // Extract fragment from textRef (e.g., "chapter.xhtml#para1" -> "para1")
-      const hashIndex = span.textRef.indexOf('#');
-      if (hashIndex !== -1) {
-        const fragmentId = span.textRef.substring(hashIndex + 1);
-        fragmentToSpan.set(fragmentId, span.id);
-      }
+    if (span.chapterId !== chapterId) {
+      continue;
     }
+
+    const hashIndex = span.textRef.indexOf('#');
+    if (hashIndex < 0) {
+      continue;
+    }
+
+    const textRefPath = normalizeEpubPath(span.textRef.slice(0, hashIndex));
+    if (textRefPath !== chapterPath) {
+      continue;
+    }
+
+    const fragmentId = decodeTextRefFragment(span.textRef.slice(hashIndex + 1));
+    if (!fragmentId) {
+      continue;
+    }
+
+    fragmentToSpan.set(fragmentId, span.id);
   }
 
   // Process the document to add data-span-id attributes
@@ -60,6 +75,29 @@ export async function normalizeXHTML(
     html: normalizedHtml,
     spanIds: presentSpanIds,
   };
+}
+
+function normalizeEpubPath(path: string): string {
+  const normalizedInput = path.replace(/\\/g, '/').replace(/^\/+/, '');
+  const normalizedPath = posix.normalize(normalizedInput);
+
+  if (normalizedPath === '.' || normalizedPath === '/') {
+    return '';
+  }
+
+  return normalizedPath.replace(/^\/+/, '');
+}
+
+function decodeTextRefFragment(fragment: string): string {
+  if (!fragment) {
+    return '';
+  }
+
+  try {
+    return decodeURIComponent(fragment);
+  } catch {
+    return fragment;
+  }
 }
 
 /**

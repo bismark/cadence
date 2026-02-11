@@ -43,4 +43,53 @@ describe('XHTML normalization', () => {
       await container.close();
     }
   });
+
+  it('only maps spans whose textRef path matches the chapter XHTML path', async () => {
+    const epubPath = join(
+      __dirname,
+      'fixtures',
+      'Advanced-Accessibility-Tests-Media-Overlays-v1.0.0.epub',
+    );
+
+    const container = await openEPUB(epubPath);
+
+    try {
+      const opf = await parseOPF(container);
+      const chapters = getSpineXHTMLFiles(opf).filter((chapter) => chapter.smilHref);
+      const chapter = chapters[0];
+      const otherChapter = chapters.find((candidate) => candidate.href !== chapter?.href);
+
+      if (!chapter?.smilHref || !otherChapter) {
+        throw new Error('Expected fixture chapters with distinct SMIL XHTML paths');
+      }
+
+      const chapterSpans = await parseChapterSMIL(container, chapter.smilHref, chapter.id);
+      const firstSpan = chapterSpans[0];
+      const hashIndex = firstSpan?.textRef.indexOf('#') ?? -1;
+
+      if (!firstSpan || hashIndex < 0) {
+        throw new Error('Expected SMIL span with a fragment textRef target');
+      }
+
+      const fragment = firstSpan.textRef.slice(hashIndex + 1);
+      const mismatchedPathSpan = {
+        ...firstSpan,
+        id: 'mismatched-path-span',
+        textRef: `${otherChapter.href}#${fragment}`,
+      };
+
+      const normalized = await normalizeXHTML(
+        container,
+        chapter.href,
+        chapter.id,
+        [...chapterSpans, mismatchedPathSpan],
+        defaultProfile,
+      );
+
+      expect(normalized.html).toContain(`data-span-id="${firstSpan.id}"`);
+      expect(normalized.html).not.toContain('data-span-id="mismatched-path-span"');
+    } finally {
+      await container.close();
+    }
+  });
 });

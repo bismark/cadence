@@ -34,6 +34,9 @@ node dist/index.js compile -i path/to/book.epub -o output.bundle.zip
 
 # Use a specific device profile
 node dist/index.js compile -i path/to/book.epub -p supernote-manta-a5x2
+
+# Enable strict SMIL target validation (fail build on unresolved targets)
+node dist/index.js compile -i path/to/book.epub --strict
 ```
 
 ## Running Tests
@@ -63,17 +66,26 @@ Compilation complete!
 
 ### Validation
 
-The compiler runs automatic validation after compilation (Step 9) that checks for:
+The compiler runs automatic validation checks in two phases:
 
-- At least one span was extracted
-- At least one page was generated
-- No duplicate span IDs
-- Every span has a page assignment
-- All rects have positive width/height
-- All rects have non-negative x,y coordinates
-- All rects fit within content bounds
+1. **SMIL-to-DOM target validation (Step 5b)**
+   - `textRef` includes a fragment target (`#id`)
+   - `textRef` path matches the chapter XHTML being compiled
+   - Target fragment exists in chapter XHTML
+   - Timed spans map to rendered geometry/text in paginated pages
 
-Warnings are logged but don't fail compilation. Errors indicate fatal issues.
+2. **Bundle geometry/output validation (Step 9)**
+   - At least one span was extracted
+   - At least one page was generated
+   - No duplicate span IDs
+   - Every span has a page assignment
+   - All rects have positive width/height
+   - All rects have non-negative x,y coordinates
+   - All rects fit within content bounds
+
+By default, validation issues are logged as warnings.
+
+Use `--strict` to fail compilation when SMIL target validation finds unresolved targets or timed spans without mapped geometry/text.
 
 ### Inspecting Output
 
@@ -97,6 +109,8 @@ src/
   index.ts           # CLI entry point
   types.ts           # TypeScript interfaces
   validation.ts      # Output validation
+  validation/
+    smil-targets.ts  # SMIL textRef/DOM target validation
   epub/
     container.ts     # EPUB ZIP reading
     opf.ts           # OPF package parsing
