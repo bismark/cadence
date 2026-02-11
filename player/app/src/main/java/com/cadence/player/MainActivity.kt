@@ -75,7 +75,10 @@ private fun parseJumpPageIndex(intent: Intent?): Int? {
 }
 
 class MainActivity : ComponentActivity() {
+    // Keep the latest jump request so intents arriving during startup/loading are applied
+    // once PlayerScreen starts collecting.
     private val jumpPageRequests = MutableSharedFlow<Int>(
+        replay = 1,
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
