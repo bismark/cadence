@@ -13,6 +13,84 @@ let browser: Browser | null = null;
 
 const EPUB_VIRTUAL_ORIGIN = 'https://epub.local';
 const EINK_GRAY_LEVELS = 4;
+const CRITICAL_PAGINATION_RESOURCE_EXTENSIONS = new Set([
+  '.css',
+  '.ttf',
+  '.otf',
+  '.woff',
+  '.woff2',
+]);
+
+export interface PaginationRoutingDiagnostics {
+  fatalIssues: string[];
+  warningIssues: string[];
+}
+
+interface RouteLike {
+  request(): {
+    url(): string;
+    headers(): Record<string, string>;
+    resourceType(): string;
+  };
+  fulfill(options: {
+    status: number;
+    contentType: string;
+    body: string | Buffer;
+  }): Promise<void>;
+  continue(): Promise<void>;
+}
+
+export function createPaginationRoutingDiagnostics(): PaginationRoutingDiagnostics {
+  return {
+    fatalIssues: [],
+    warningIssues: [],
+  };
+}
+
+export function classifyPaginationRequestUrl(
+  requestUrl: string,
+):
+  | { kind: 'epub-resource'; path: string }
+  | { kind: 'inline-resource' }
+  | { kind: 'blocked'; reason: string } {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(requestUrl);
+  } catch {
+    return { kind: 'blocked', reason: 'invalid URL' };
+  }
+
+  if (parsedUrl.protocol === 'data:' || parsedUrl.protocol === 'blob:') {
+    return { kind: 'inline-resource' };
+  }
+
+  if (parsedUrl.origin !== EPUB_VIRTUAL_ORIGIN) {
+    return {
+      kind: 'blocked',
+      reason: `origin ${parsedUrl.origin} is not allowed`,
+    };
+  }
+
+  const decodedPath = decodeVirtualUrlPath(parsedUrl.pathname);
+  if (decodedPath === null) {
+    return { kind: 'blocked', reason: 'invalid EPUB resource path' };
+  }
+
+  return {
+    kind: 'epub-resource',
+    path: decodedPath,
+  };
+}
+
+export function isCriticalPaginationResource(requestPath: string, resourceType: string): boolean {
+  const normalizedResourceType = resourceType.trim().toLowerCase();
+  if (normalizedResourceType === 'stylesheet' || normalizedResourceType === 'font') {
+    return true;
+  }
+
+  const extension = posix.extname(requestPath).toLowerCase();
+  return CRITICAL_PAGINATION_RESOURCE_EXTENSIONS.has(extension);
+}
 
 function normalizeEpubPath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\/+/, '');
@@ -132,30 +210,74 @@ function decodeVirtualUrlToPath(urlString: string): string | null {
   }
 }
 
-async function setupEpubResourceRouting(
-  page: PlaywrightPage,
+function getRequestSource(requestHeaders: Record<string, string>, fallbackPath: string): string {
+  const referer = requestHeaders.referer ?? requestHeaders.Referer;
+  if (!referer) {
+    return fallbackPath;
+  }
+
+  const refererPath = decodeVirtualUrlToPath(referer);
+  return refererPath ?? referer;
+}
+
+function addUniqueIssue(issues: string[], seen: Set<string>, message: string): void {
+  if (seen.has(message)) {
+    return;
+  }
+
+  seen.add(message);
+  issues.push(message);
+}
+
+export function throwOnPaginationRoutingFailures(
+  chapterId: string,
+  diagnostics: PaginationRoutingDiagnostics,
+): void {
+  if (diagnostics.fatalIssues.length === 0) {
+    return;
+  }
+
+  const details = diagnostics.fatalIssues.map((issue) => `  - ${issue}`).join('\n');
+  throw new Error(
+    `Pagination resource policy violations for chapter "${chapterId}":\n${details}`,
+  );
+}
+
+export function createEpubResourceRouteHandler(
   container: EPUBContainer,
   content: NormalizedContent,
-): Promise<void> {
-  const missingResources = new Set<string>();
+  diagnostics: PaginationRoutingDiagnostics,
+): (route: RouteLike) => Promise<void> {
+  const seenFatalIssues = new Set<string>();
+  const seenWarningIssues = new Set<string>();
 
-  const routeHandler = async (route: Route): Promise<void> => {
-    const requestUrl = route.request().url();
-    const requestPath = decodeVirtualUrlToPath(requestUrl);
+  return async (route: RouteLike): Promise<void> => {
+    const request = route.request();
+    const requestUrl = request.url();
+    const requestSource = getRequestSource(request.headers(), content.xhtmlPath);
 
-    if (requestPath === null) {
-      const warning = `invalid path in request URL: ${requestUrl}`;
-      if (!missingResources.has(warning)) {
-        missingResources.add(warning);
-        console.warn(`  Warning: ${warning} (chapter=${content.chapterId})`);
-      }
+    const classification = classifyPaginationRequestUrl(requestUrl);
+    if (classification.kind === 'inline-resource') {
+      await route.continue();
+      return;
+    }
+
+    if (classification.kind === 'blocked') {
+      const issue =
+        `blocked non-EPUB request "${requestUrl}"` +
+        ` (chapter=${content.chapterId}, source=${requestSource}, reason=${classification.reason})`;
+
+      addUniqueIssue(diagnostics.fatalIssues, seenFatalIssues, issue);
+
       await route.fulfill({
-        status: 400,
+        status: 403,
         contentType: 'text/plain; charset=utf-8',
-        body: `Invalid EPUB resource URL: ${requestUrl}`,
+        body: `Blocked non-EPUB request: ${requestUrl}`,
       });
       return;
     }
+
+    const requestPath = classification.path;
 
     try {
       const resource = await container.readFile(requestPath);
@@ -165,15 +287,15 @@ async function setupEpubResourceRouting(
         body: resource,
       });
     } catch {
-      const referer = route.request().headers().referer;
-      const refererPath = referer ? decodeVirtualUrlToPath(referer) : null;
-      const warning =
+      const critical = isCriticalPaginationResource(requestPath, request.resourceType());
+      const issue =
         `missing EPUB resource "${requestPath}"` +
-        ` (chapter=${content.chapterId}, source=${refererPath ?? referer ?? content.xhtmlPath})`;
+        ` (chapter=${content.chapterId}, source=${requestSource}, critical=${critical ? 'yes' : 'no'})`;
 
-      if (!missingResources.has(warning)) {
-        missingResources.add(warning);
-        console.warn(`  Warning: ${warning}`);
+      if (critical) {
+        addUniqueIssue(diagnostics.fatalIssues, seenFatalIssues, issue);
+      } else {
+        addUniqueIssue(diagnostics.warningIssues, seenWarningIssues, issue);
       }
 
       await route.fulfill({
@@ -183,8 +305,20 @@ async function setupEpubResourceRouting(
       });
     }
   };
+}
 
-  await page.route(`${EPUB_VIRTUAL_ORIGIN}/**`, routeHandler);
+async function setupEpubResourceRouting(
+  page: PlaywrightPage,
+  container: EPUBContainer,
+  content: NormalizedContent,
+): Promise<PaginationRoutingDiagnostics> {
+  const diagnostics = createPaginationRoutingDiagnostics();
+  const routeHandler = createEpubResourceRouteHandler(container, content, diagnostics);
+
+  // Security policy: deny-by-default and only fulfill requests from the EPUB virtual origin.
+  await page.route('**/*', routeHandler as (route: Route) => Promise<void>);
+
+  return diagnostics;
 }
 
 /**
@@ -312,15 +446,38 @@ export async function paginateContent(
     const htmlWithColumns = content.html.replace('<style>', `<style>${fontFaceCSS}${columnCSS}`);
     const htmlWithBase = injectBaseHref(htmlWithColumns, chapterBaseHref);
 
-    if (container) {
-      await setupEpubResourceRouting(page, container, content);
-    }
+    const routingDiagnostics = container
+      ? await setupEpubResourceRouting(page, container, content)
+      : null;
+
+    let loggedWarningIssueCount = 0;
+    const logNewRoutingWarnings = (): void => {
+      if (!routingDiagnostics) {
+        return;
+      }
+
+      while (loggedWarningIssueCount < routingDiagnostics.warningIssues.length) {
+        console.warn(`  Warning: ${routingDiagnostics.warningIssues[loggedWarningIssueCount]}`);
+        loggedWarningIssueCount += 1;
+      }
+    };
+
+    const assertNoFatalRoutingIssues = (): void => {
+      if (!routingDiagnostics) {
+        return;
+      }
+
+      throwOnPaginationRoutingFailures(content.chapterId, routingDiagnostics);
+    };
 
     await page.setContent(htmlWithBase, {
       waitUntil: 'domcontentloaded',
     });
 
     await page.evaluate(() => document.fonts.ready);
+
+    logNewRoutingWarnings();
+    assertNoFatalRoutingIssues();
 
     // Rely on source-authored break hints (break-before/after, page-break-*)
     // instead of injecting heuristic chapter breaks.
@@ -351,6 +508,9 @@ export async function paginateContent(
     const pages: Page[] = [];
 
     for (let colIndex = 0; colIndex < columnCount; colIndex++) {
+      logNewRoutingWarnings();
+      assertNoFatalRoutingIssues();
+
       const colLeft = colIndex * (columnWidth + columnGap);
 
       const pageData = await page.evaluate(
@@ -835,6 +995,9 @@ export async function paginateContent(
         lastSpanId: visibleSpanIds[visibleSpanIds.length - 1] || '',
       });
     }
+
+    logNewRoutingWarnings();
+    assertNoFatalRoutingIssues();
 
     const compactedPages = pages.filter(
       (chapterPage) => chapterPage.textRuns.length > 0 || chapterPage.spanRects.length > 0,
