@@ -11,6 +11,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -55,6 +56,13 @@ fun PlayerScreen(
     var positionMs by remember { mutableLongStateOf(0L) }
     var debugMode by remember { mutableStateOf(false) }
 
+    fun updatePlaybackCursor(span: SpanEntry?, pageIndex: Int) {
+        Snapshot.withMutableSnapshot {
+            activeSpan = span
+            currentPageIndex = pageIndex
+        }
+    }
+
     // Debug-only instrumentation
     val pollLoopStats = remember { RollingTimingStats("poll-loop", reportEvery = 200, slowThresholdMs = 6.0) }
     val spanLookupStats = remember { RollingTimingStats("span-lookup", reportEvery = 200, slowThresholdMs = 1.5) }
@@ -70,7 +78,6 @@ fun PlayerScreen(
 
         if (preferInitialPage && totalPages > 0) {
             val targetPageIndex = initialPageIndex.coerceIn(0, totalPages - 1)
-            currentPageIndex = targetPageIndex
 
             val targetSpan = bundle
                 .getPage(targetPageIndex)
@@ -81,9 +88,11 @@ fun PlayerScreen(
 
             if (targetSpan != null) {
                 val targetPositionMs = targetSpan.clipBeginMs.toLong() + 1L
-                activeSpan = targetSpan
+                updatePlaybackCursor(span = targetSpan, pageIndex = targetPageIndex)
                 audioPlayer.seekTo(targetPositionMs)
                 positionMs = targetPositionMs
+            } else {
+                updatePlaybackCursor(span = null, pageIndex = targetPageIndex)
             }
 
             if (PerfLog.enabled) {
@@ -99,8 +108,7 @@ fun PlayerScreen(
                 positionMs = savedPosition
                 // Find and set the active span for the restored position
                 bundle.findSpanAtTime(savedPosition.toDouble())?.let { span ->
-                    activeSpan = span
-                    currentPageIndex = span.pageIndex
+                    updatePlaybackCursor(span = span, pageIndex = span.pageIndex)
                 }
             }
 
@@ -128,14 +136,18 @@ fun PlayerScreen(
             // Throttle UI time updates to ~1Hz to avoid triggering full-screen recomposition at 20Hz.
             // Span/page sync still runs at 20Hz based on polledPositionMs.
             uiPositionTicks++
+            var pendingUiPositionMs: Long? = null
             if (uiPositionTicks >= 20 || abs(polledPositionMs - positionMs) >= 1000L) {
-                positionMs = polledPositionMs
+                pendingUiPositionMs = polledPositionMs
                 uiPositionTicks = 0
             }
 
-            // Only update activeSpan when position leaves current span's range
-            // This prevents race conditions when user taps (tap sets activeSpan,
-            // but position hasn't caught up yet - we don't want to overwrite)
+            var pendingSpanUpdate: SpanEntry? = null
+            var pendingPageIndex: Int? = null
+
+            // Only update activeSpan when position leaves current span's range.
+            // Apply page + span together so old highlight removal and new highlight draw
+            // happen in a single UI refresh on e-ink.
             val currentSpan = activeSpan
             if (currentSpan == null ||
                 polledPositionMs < currentSpan.clipBeginMs ||
@@ -146,13 +158,29 @@ fun PlayerScreen(
                 }
 
                 resolvedSpan?.let { span ->
-                    if (currentSpan?.id != span.id) {
-                        spanSwitchesSinceLog++
+                    val spanChanged = currentSpan?.id != span.id
+                    val pageChanged = span.pageIndex != currentPageIndex
+                    if (spanChanged || pageChanged) {
+                        if (spanChanged) {
+                            spanSwitchesSinceLog++
+                        }
+                        if (pageChanged) {
+                            pageSwitchesSinceLog++
+                        }
+                        pendingSpanUpdate = span
+                        pendingPageIndex = span.pageIndex
                     }
-                    activeSpan = span
-                    if (span.pageIndex != currentPageIndex) {
-                        pageSwitchesSinceLog++
-                        currentPageIndex = span.pageIndex
+                }
+            }
+
+            if (pendingUiPositionMs != null || pendingSpanUpdate != null) {
+                Snapshot.withMutableSnapshot {
+                    pendingUiPositionMs?.let { updatedPositionMs ->
+                        positionMs = updatedPositionMs
+                    }
+                    pendingSpanUpdate?.let { updatedSpan ->
+                        activeSpan = updatedSpan
+                        currentPageIndex = pendingPageIndex ?: updatedSpan.pageIndex
                     }
                 }
             }
@@ -220,10 +248,10 @@ fun PlayerScreen(
                 // Go to last page and last span when playback completes
                 val lastPage = bundle.pages.lastOrNull()
                 if (lastPage != null) {
-                    currentPageIndex = lastPage.pageIndex
-                    bundle.getLastTimedSpan()?.let { lastSpan ->
-                        activeSpan = lastSpan
-                    }
+                    updatePlaybackCursor(
+                        span = bundle.getLastTimedSpan() ?: activeSpan,
+                        pageIndex = lastPage.pageIndex
+                    )
                 }
             }
         }
@@ -232,12 +260,9 @@ fun PlayerScreen(
     fun SpanEntry.hasValidTiming(): Boolean = clipBeginMs >= 0 && clipEndMs > clipBeginMs
 
     fun seekToSpan(span: SpanEntry, play: Boolean, overridePageIndex: Int? = null) {
-        activeSpan = span
-        if (overridePageIndex != null) {
-            currentPageIndex = overridePageIndex
-        } else if (span.pageIndex != currentPageIndex) {
-            currentPageIndex = span.pageIndex
-        }
+        val targetPageIndex = overridePageIndex ?: span.pageIndex
+        updatePlaybackCursor(span = span, pageIndex = targetPageIndex)
+
         audioPlayer.seekTo(span.clipBeginMs.toLong() + 1)
         if (play) {
             audioPlayer.play()
@@ -261,7 +286,6 @@ fun PlayerScreen(
         }
 
         val clampedPageIndex = targetPageIndex.coerceIn(0, totalPages - 1)
-        currentPageIndex = clampedPageIndex
 
         findFirstTimedSpanOnPage(clampedPageIndex)?.let { span ->
             seekToSpan(span, play = false, overridePageIndex = clampedPageIndex)
@@ -269,7 +293,7 @@ fun PlayerScreen(
         }
 
         // Keep page visible even if it has no timed spans.
-        activeSpan = null
+        updatePlaybackCursor(span = null, pageIndex = clampedPageIndex)
         audioPlayer.pause()
     }
 
@@ -293,10 +317,7 @@ fun PlayerScreen(
 
         val currentSpan = bundle.findSpanAtTime(playbackPositionMs.toDouble())
         if (currentSpan != null && currentSpan.hasValidTiming()) {
-            activeSpan = currentSpan
-            if (currentSpan.pageIndex != currentPageIndex) {
-                currentPageIndex = currentSpan.pageIndex
-            }
+            updatePlaybackCursor(span = currentSpan, pageIndex = currentSpan.pageIndex)
             audioPlayer.play()
             return
         }
