@@ -11,13 +11,14 @@ data class BundleMeta(
     val bundleId: String? = null,  // Stable identifier (from dc:identifier or hash)
     val profile: String,
     val title: String,
+    val audioFile: String,
     val pages: Int,
     val spans: Int
 )
 
 /**
  * A span entry from spans.jsonl
- * Note: clipBeginMs/clipEndMs are global timestamps in the single audio.opus file
+ * Note: clipBeginMs/clipEndMs are global timestamps in the single bundle audio file
  */
 @Serializable
 data class SpanEntry(
@@ -110,9 +111,9 @@ data class CadenceBundle(
     val basePath: String  // Path to bundle directory
 ) {
     /**
-     * Path to the single audio file
+     * Path to the single bundle audio file
      */
-    val audioPath: String get() = "$basePath/audio.opus"
+    val audioPath: String get() = "$basePath/${meta.audioFile}"
 
     private val timedSpans: List<SpanEntry> by lazy {
         spans
@@ -122,7 +123,7 @@ data class CadenceBundle(
 
     /**
      * Find the span active at a given timestamp using binary search.
-     * Timestamps are global offsets into the single audio.opus file.
+     * Timestamps are global offsets into the single bundle audio file.
      * Uses only spans with valid timing.
      */
     fun findSpanAtTime(timestampMs: Double): SpanEntry? {

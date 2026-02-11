@@ -4,6 +4,8 @@ import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EPUBContainer } from '../types.js';
 
+export type AudioOutputFormat = 'opus' | 'm4a';
+
 /**
  * Offset information for a source audio file in the concatenated output
  */
@@ -27,6 +29,59 @@ export interface ConcatResult {
 }
 
 const PROBE_CONCURRENCY = Math.max(1, Math.min(4, cpus().length));
+
+export function parseAudioOutputFormat(value: string): AudioOutputFormat {
+  const normalized = value.trim().toLowerCase();
+
+  if (normalized === 'opus' || normalized === 'm4a') {
+    return normalized;
+  }
+
+  throw new Error(`Unsupported audio format: ${value}. Expected one of: opus, m4a`);
+}
+
+export function getAudioFileName(format: AudioOutputFormat): string {
+  switch (format) {
+    case 'opus':
+      return 'audio.opus';
+    case 'm4a':
+      return 'audio.m4a';
+    default: {
+      const exhaustiveCheck: never = format;
+      throw new Error(`Unsupported audio format: ${exhaustiveCheck}`);
+    }
+  }
+}
+
+function getAudioEncodeArgs(format: AudioOutputFormat): string[] {
+  switch (format) {
+    case 'opus':
+      // OGG Opus settings tuned for spoken-word books.
+      return ['-c:a', 'libopus', '-b:a', '48k', '-vbr', 'on', '-application', 'voip'];
+
+    case 'm4a':
+      // AAC in M4A container.
+      return ['-c:a', 'aac', '-b:a', '48k'];
+
+    default: {
+      const exhaustiveCheck: never = format;
+      throw new Error(`Unsupported audio format: ${exhaustiveCheck}`);
+    }
+  }
+}
+
+function getAudioFormatLabel(format: AudioOutputFormat): string {
+  switch (format) {
+    case 'opus':
+      return 'OGG Opus';
+    case 'm4a':
+      return 'M4A (AAC)';
+    default: {
+      const exhaustiveCheck: never = format;
+      throw new Error(`Unsupported audio format: ${exhaustiveCheck}`);
+    }
+  }
+}
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -100,10 +155,12 @@ async function getAudioDuration(filePath: string): Promise<number> {
 /**
  * Run FFmpeg to concatenate and transcode audio files
  */
-async function runFFmpeg(concatFilePath: string, outputPath: string): Promise<void> {
+async function runFFmpeg(
+  concatFilePath: string,
+  outputPath: string,
+  format: AudioOutputFormat,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Use OGG Opus with good quality settings for audiobooks
-    // -b:a 48k is good for voice, -vbr on enables variable bitrate
     const ffmpeg = spawn('ffmpeg', [
       '-y', // Overwrite output
       '-f',
@@ -112,14 +169,7 @@ async function runFFmpeg(concatFilePath: string, outputPath: string): Promise<vo
       '0', // Allow absolute paths
       '-i',
       concatFilePath, // Input concat file
-      '-c:a',
-      'libopus', // Opus codec
-      '-b:a',
-      '48k', // 48kbps bitrate (good for speech)
-      '-vbr',
-      'on', // Variable bitrate
-      '-application',
-      'voip', // Optimize for speech
+      ...getAudioEncodeArgs(format),
       outputPath,
     ]);
 
@@ -140,17 +190,19 @@ async function runFFmpeg(concatFilePath: string, outputPath: string): Promise<vo
 }
 
 /**
- * Concatenate audio files from an EPUB into a single OGG Opus file.
+ * Concatenate audio files from an EPUB into a single bundle audio file.
  *
  * @param audioFiles - List of audio file paths (relative to EPUB root)
  * @param container - EPUB container for reading files
  * @param outputPath - Path where the concatenated file should be written
+ * @param format - Output audio format
  * @returns Offset mapping and total duration
  */
 export async function concatenateAudio(
   audioFiles: string[],
   container: EPUBContainer,
   outputPath: string,
+  format: AudioOutputFormat,
 ): Promise<ConcatResult> {
   if (audioFiles.length === 0) {
     return {
@@ -200,7 +252,7 @@ export async function concatenateAudio(
     }
 
     console.log(`  Total audio duration: ${(currentOffsetMs / 1000 / 60).toFixed(1)} minutes`);
-    console.log(`  Concatenating to OGG Opus...`);
+    console.log(`  Concatenating to ${getAudioFormatLabel(format)}...`);
 
     // Create FFmpeg concat file
     const concatFileContent = tempFiles.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join('\n');
@@ -208,9 +260,9 @@ export async function concatenateAudio(
     await writeFile(concatFilePath, concatFileContent);
 
     // Run FFmpeg
-    await runFFmpeg(concatFilePath, outputPath);
+    await runFFmpeg(concatFilePath, outputPath, format);
 
-    console.log(`  Audio concatenation complete`);
+    console.log('  Audio concatenation complete');
 
     return {
       outputPath,
@@ -245,16 +297,18 @@ export function applyAudioOffsets<
 }
 
 /**
- * Concatenate audio files from disk into a single OGG Opus file.
+ * Concatenate audio files from disk into a single bundle audio file.
  * Unlike concatenateAudio, this works with direct file paths rather than an EPUBContainer.
  *
  * @param audioFiles - List of absolute paths to audio files
  * @param outputPath - Path where the concatenated file should be written
+ * @param format - Output audio format
  * @returns Offset mapping and total duration
  */
 export async function concatenateAudioFiles(
   audioFiles: string[],
   outputPath: string,
+  format: AudioOutputFormat,
 ): Promise<ConcatResult> {
   if (audioFiles.length === 0) {
     return {
@@ -295,7 +349,7 @@ export async function concatenateAudioFiles(
     }
 
     console.log(`  Total audio duration: ${(currentOffsetMs / 1000 / 60).toFixed(1)} minutes`);
-    console.log(`  Concatenating to OGG Opus...`);
+    console.log(`  Concatenating to ${getAudioFormatLabel(format)}...`);
 
     // Create FFmpeg concat file
     const concatFileContent = audioFiles
@@ -305,9 +359,9 @@ export async function concatenateAudioFiles(
     await writeFile(concatFilePath, concatFileContent);
 
     // Run FFmpeg
-    await runFFmpeg(concatFilePath, outputPath);
+    await runFFmpeg(concatFilePath, outputPath, format);
 
-    console.log(`  Audio concatenation complete`);
+    console.log('  Audio concatenation complete');
 
     return {
       outputPath,

@@ -153,6 +153,7 @@ export interface BundleMeta {
   bundleId: string; // Stable identifier for this book (from dc:identifier or hash)
   profile: string;
   title: string;
+  audioFile: string; // Bundle audio filename (e.g., audio.opus, audio.m4a)
   pages: number;
   spans: number;
 }
@@ -167,7 +168,7 @@ export interface TocEntry {
 
 /**
  * Span entry for JSONL output (includes pageIndex for lookup)
- * Note: clipBeginMs/clipEndMs are global timestamps in the single audio.opus file
+ * Note: clipBeginMs/clipEndMs are global timestamps in the single bundle audio file
  */
 export interface SpanEntry {
   id: string;

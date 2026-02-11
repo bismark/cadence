@@ -2,7 +2,7 @@ import { createWriteStream, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import archiver from 'archiver';
-import { applyAudioOffsets, concatenateAudio } from '../audio/concat.js';
+import { type AudioOutputFormat, applyAudioOffsets, concatenateAudio } from '../audio/concat.js';
 import { compactPageStyles } from './compact-page-styles.js';
 import type {
   BundleMeta,
@@ -27,6 +27,7 @@ export async function writeBundle(
   toc: TocEntry[],
   audioFiles: string[],
   container: EPUBContainer,
+  audioFormat: AudioOutputFormat,
 ): Promise<void> {
   // Create a temporary directory for bundle contents
   const tempDir = outputPath.replace(/\.zip$/, '_temp');
@@ -38,9 +39,9 @@ export async function writeBundle(
     }
     mkdirSync(tempDir, { recursive: true });
 
-    // Concatenate audio files into single OGG Opus file
-    const audioOutputPath = join(tempDir, 'audio.opus');
-    const concatResult = await concatenateAudio(audioFiles, container, audioOutputPath);
+    // Concatenate audio files into a single bundle audio file
+    const audioOutputPath = join(tempDir, meta.audioFile);
+    const concatResult = await concatenateAudio(audioFiles, container, audioOutputPath, audioFormat);
 
     // Apply audio offsets to spans (modifies in place)
     applyAudioOffsets(spans, concatResult.offsets);
@@ -87,7 +88,7 @@ async function writeTocJson(dir: string, toc: TocEntry[]): Promise<void> {
 
 /**
  * Write spans.jsonl file (one JSON object per line)
- * Timestamps are global offsets into the single audio.opus file
+ * Timestamps are global offsets into the single bundle audio file
  */
 async function writeSpansJsonl(
   dir: string,
@@ -184,6 +185,7 @@ export async function writeBundleUncompressed(
   toc: TocEntry[],
   audioFiles: string[],
   container: EPUBContainer,
+  audioFormat: AudioOutputFormat,
 ): Promise<void> {
   // Clean up any existing directory
   if (existsSync(outputDir)) {
@@ -191,9 +193,9 @@ export async function writeBundleUncompressed(
   }
   mkdirSync(outputDir, { recursive: true });
 
-  // Concatenate audio files into single OGG Opus file
-  const audioOutputPath = join(outputDir, 'audio.opus');
-  const concatResult = await concatenateAudio(audioFiles, container, audioOutputPath);
+  // Concatenate audio files into a single bundle audio file
+  const audioOutputPath = join(outputDir, meta.audioFile);
+  const concatResult = await concatenateAudio(audioFiles, container, audioOutputPath, audioFormat);
 
   // Apply audio offsets to spans (modifies in place)
   applyAudioOffsets(spans, concatResult.offsets);

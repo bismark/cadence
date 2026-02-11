@@ -18,6 +18,11 @@ import {
   tagSentencesInXhtml,
   transcribeMultiple,
 } from './align/index.js';
+import {
+  getAudioFileName,
+  parseAudioOutputFormat,
+  type AudioOutputFormat,
+} from './audio/concat.js';
 import { compactPageStyles } from './bundle/compact-page-styles.js';
 import { compactSpanIds } from './bundle/compact-span-ids.js';
 import { writeBundle, writeBundleUncompressed } from './bundle/writer.js';
@@ -63,11 +68,20 @@ program
   .option('-o, --output <path>', 'Output bundle path (default: <input>.bundle.zip)')
   .option('-p, --profile <name>', `Device profile (${Object.keys(profiles).join(', ')})`)
   .option('--no-zip', 'Output uncompressed bundle directory instead of ZIP')
+  .option('--audio-format <format>', 'Bundle audio format (opus or m4a)', 'opus')
   .option('--strict', 'Fail compilation when SMIL target validation finds issues')
   .action(async (options) => {
     try {
       const profile = getProfile(options.profile);
-      await compileEPUB(options.input, options.output, options.zip, profile, options.strict ?? false);
+      const audioFormat = parseAudioOutputFormat(options.audioFormat);
+      await compileEPUB(
+        options.input,
+        options.output,
+        options.zip,
+        profile,
+        options.strict ?? false,
+        audioFormat,
+      );
     } catch (err) {
       console.error('Compilation failed:', err);
       process.exit(1);
@@ -122,11 +136,13 @@ program
   .option('-o, --output <path>', 'Output bundle path (default: <epub>.bundle.zip)')
   .option('-p, --profile <name>', `Device profile (${Object.keys(profiles).join(', ')})`)
   .option('--no-zip', 'Output uncompressed bundle directory instead of ZIP')
+  .option('--audio-format <format>', 'Bundle audio format (opus or m4a)', 'opus')
   .option('--keep-temp', 'Keep temporary files (for debugging)')
   .option('--transcription <path>', 'Use existing transcription JSON (skip parakeet-mlx)')
   .action(async (options) => {
     try {
       const profile = getProfile(options.profile);
+      const audioFormat = parseAudioOutputFormat(options.audioFormat);
       await alignEPUB(
         options.epub,
         options.audio,
@@ -134,6 +150,7 @@ program
         options.zip,
         options.keepTemp ?? false,
         profile,
+        audioFormat,
         options.transcription,
       );
     } catch (err) {
@@ -683,6 +700,7 @@ async function inspectBundle(bundlePath: string): Promise<void> {
   console.log(`Path: ${bundlePath}`);
   console.log(`Title: ${meta.title}`);
   console.log(`Profile: ${meta.profile}`);
+  console.log(`Audio file: ${meta.audioFile}`);
   console.log(`Pages: ${pages.length}`);
   console.log(`Spans: ${spans.length}`);
   console.log(`Timed spans: ${timedSpans.length}`);
@@ -814,6 +832,7 @@ async function alignEPUB(
   createZip: boolean,
   keepTemp: boolean,
   profile: DeviceProfile,
+  audioFormat: AudioOutputFormat,
   transcriptionPath?: string,
 ): Promise<void> {
   const resolvedEpub = resolve(epubPath);
@@ -827,6 +846,7 @@ async function alignEPUB(
   console.log(`Audio:  ${resolvedAudio}`);
   console.log(`Output: ${resolvedOutput}`);
   console.log(`Profile: ${profile.name}`);
+  console.log(`Audio format: ${audioFormat}`);
   console.log('');
 
   // Create temp directory for extracted chapters
@@ -1031,12 +1051,22 @@ async function alignEPUB(
         bundleId,
         profile: profile.name,
         title: opf.title,
+        audioFile: getAudioFileName(audioFormat),
         pages: pages.length,
         spans: spans.length,
       };
 
       if (createZip) {
-        await writeBundleAligned(resolvedOutput, meta, spans, pages, spanToPageIndex, toc, tracks);
+        await writeBundleAligned(
+          resolvedOutput,
+          meta,
+          spans,
+          pages,
+          spanToPageIndex,
+          toc,
+          tracks,
+          audioFormat,
+        );
       } else {
         const uncompressedDir = resolvedOutput.replace(/\.zip$/, '');
         await writeBundleAlignedUncompressed(
@@ -1047,6 +1077,7 @@ async function alignEPUB(
           spanToPageIndex,
           toc,
           tracks,
+          audioFormat,
         );
         console.log(`  Bundle written to: ${uncompressedDir}`);
       }
@@ -1207,6 +1238,7 @@ async function writeBundleAligned(
   spanToPageIndex: Map<string, number>,
   toc: TocEntry[],
   tracks: { path: string; duration: number; title?: string }[],
+  audioFormat: AudioOutputFormat,
 ): Promise<void> {
   const { existsSync, rmSync, mkdirSync, createWriteStream } = await import('node:fs');
   const archiver = (await import('archiver')).default;
@@ -1220,7 +1252,16 @@ async function writeBundleAligned(
     }
     mkdirSync(tempDir, { recursive: true });
 
-    await writeBundleAlignedUncompressed(tempDir, meta, spans, pages, spanToPageIndex, toc, tracks);
+    await writeBundleAlignedUncompressed(
+      tempDir,
+      meta,
+      spans,
+      pages,
+      spanToPageIndex,
+      toc,
+      tracks,
+      audioFormat,
+    );
 
     // Create ZIP archive
     if (existsSync(outputPath)) {
@@ -1258,6 +1299,7 @@ async function writeBundleAlignedUncompressed(
   spanToPageIndex: Map<string, number>,
   toc: TocEntry[],
   tracks: { path: string; duration: number; title?: string }[],
+  audioFormat: AudioOutputFormat,
 ): Promise<void> {
   const { mkdir, writeFile } = await import('node:fs/promises');
   const { existsSync, rmSync } = await import('node:fs');
@@ -1272,10 +1314,10 @@ async function writeBundleAlignedUncompressed(
   await mkdir(outputDir, { recursive: true });
   await mkdir(join(outputDir, 'pages'), { recursive: true });
 
-  // Concatenate audio files into single OGG Opus file
-  const audioOutputPath = join(outputDir, 'audio.opus');
+  // Concatenate audio files into a single bundle audio file
+  const audioOutputPath = join(outputDir, meta.audioFile);
   const trackPaths = tracks.map((t) => t.path);
-  const concatResult = await concatenateAudioFiles(trackPaths, audioOutputPath);
+  const concatResult = await concatenateAudioFiles(trackPaths, audioOutputPath, audioFormat);
 
   // Apply audio offsets to spans (modifies in place)
   applyAudioOffsets(spans, concatResult.offsets);
@@ -1320,6 +1362,7 @@ async function compileEPUB(
   createZip: boolean,
   profile: DeviceProfile,
   strictSmilValidation: boolean,
+  audioFormat: AudioOutputFormat,
 ): Promise<void> {
   const resolvedInput = resolve(inputPath);
   const defaultOutput = resolvedInput.replace(/\.epub$/i, '.bundle.zip');
@@ -1330,6 +1373,7 @@ async function compileEPUB(
   console.log(`Input:  ${resolvedInput}`);
   console.log(`Output: ${resolvedOutput}`);
   console.log(`Profile: ${profile.name}`);
+  console.log(`Audio format: ${audioFormat}`);
   if (strictSmilValidation) {
     console.log('Strict SMIL target validation: enabled');
   }
@@ -1455,6 +1499,7 @@ async function compileEPUB(
       bundleId,
       profile: profile.name,
       title: opf.title,
+      audioFile: getAudioFileName(audioFormat),
       pages: pages.length,
       spans: spans.length,
     };
@@ -1469,6 +1514,7 @@ async function compileEPUB(
         toc,
         audioFiles,
         container,
+        audioFormat,
       );
     } else {
       const uncompressedDir = resolvedOutput.replace(/\.zip$/, '');
@@ -1481,6 +1527,7 @@ async function compileEPUB(
         toc,
         audioFiles,
         container,
+        audioFormat,
       );
     }
 
