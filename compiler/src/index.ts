@@ -30,6 +30,7 @@ import { getProfile, profiles } from './device-profiles/profiles.js';
 import { openEPUB } from './epub/container.js';
 import { getAudioFiles, getSpineXHTMLFiles, parseOPF } from './epub/opf.js';
 import { parseChapterSMIL } from './epub/smil.js';
+import { buildTocEntries } from './epub/toc.js';
 import { normalizeXHTML } from './epub/xhtml.js';
 import {
   assignSpansToPages,
@@ -1024,17 +1025,8 @@ async function alignEPUB(
       const spanToPageIndex = assignSpansToPages(pages);
       console.log(`  Mapped ${spanToPageIndex.size} spans to pages`);
 
-      // Build ToC
-      const toc: TocEntry[] = [];
-      for (const chapter of spineFiles) {
-        const firstPage = pages.find((p) => p.chapterId === chapter.id);
-        if (firstPage) {
-          toc.push({
-            title: chapter.id,
-            pageIndex: firstPage.pageIndex,
-          });
-        }
-      }
+      // Build ToC from EPUB navigation (EPUB3 nav, NCX fallback)
+      const toc = await buildTocEntries(container, opf, spineFiles, pages);
 
       // Step 7: Prepare audio files for bundle
       console.log('Step 7: Preparing audio files...');
@@ -1461,17 +1453,8 @@ async function compileEPUB(
     const spanToPageIndex = assignSpansToPages(pages);
     console.log(`  Mapped ${spanToPageIndex.size} spans to pages`);
 
-    // Build table of contents (chapter title -> starting page index)
-    const toc: TocEntry[] = [];
-    for (const chapter of spineFiles) {
-      const firstPage = pages.find((p) => p.chapterId === chapter.id);
-      if (firstPage) {
-        toc.push({
-          title: chapter.id, // TODO: extract actual chapter title from XHTML
-          pageIndex: firstPage.pageIndex,
-        });
-      }
-    }
+    // Build table of contents from EPUB navigation (EPUB3 nav, NCX fallback)
+    const toc = await buildTocEntries(container, opf, spineFiles, pages);
     console.log(`  ToC entries: ${toc.length}`);
 
     // Step 7: Collect audio files

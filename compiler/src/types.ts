@@ -115,6 +115,7 @@ export interface ManifestItem {
   href: string;
   mediaType: string;
   mediaOverlay?: string;
+  properties?: string[];
 }
 
 /**
@@ -134,6 +135,8 @@ export interface OPFPackage {
   manifest: Map<string, ManifestItem>;
   spine: SpineItem[];
   mediaOverlays: Map<string, string>; // spine item id -> SMIL href
+  navPath?: string; // EPUB3 nav document href
+  ncxPath?: string; // EPUB2 NCX href (fallback)
 }
 
 /**
@@ -165,7 +168,8 @@ export interface BundleMeta {
  */
 export interface TocEntry {
   title: string;
-  pageIndex: number; // Global page index where this chapter starts
+  pageIndex: number; // Global page index where this section starts
+  level?: number; // Optional hierarchy depth (0 = top level)
 }
 
 /**

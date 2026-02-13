@@ -39,10 +39,14 @@ export async function parseOPF(container: EPUBContainer): Promise<OPFPackage> {
   const manifest = parseManifest(pkg.manifest, container.opfPath);
 
   // Parse spine
-  const spine = parseSpine(pkg.spine);
+  const { spine, tocId } = parseSpine(pkg.spine);
 
   // Build media overlay mapping
   const mediaOverlays = buildMediaOverlayMap(manifest, spine);
+
+  // Navigation documents
+  const navPath = findNavPath(manifest);
+  const ncxPath = findNcxPath(manifest, tocId);
 
   return {
     title: titleText,
@@ -50,6 +54,8 @@ export async function parseOPF(container: EPUBContainer): Promise<OPFPackage> {
     manifest,
     spine,
     mediaOverlays,
+    navPath,
+    ncxPath,
   };
 }
 
@@ -70,6 +76,11 @@ function parseManifest(
     const href = itemObj['@_href'];
     const mediaType = itemObj['@_media-type'];
     const mediaOverlay = itemObj['@_media-overlay'];
+    const propertiesAttr = itemObj['@_properties'];
+    const properties = propertiesAttr
+      ?.split(/\s+/)
+      .map((prop) => prop.trim())
+      .filter(Boolean);
 
     if (id && href && mediaType) {
       // Resolve href relative to OPF location
@@ -80,6 +91,7 @@ function parseManifest(
         href: resolvedHref,
         mediaType,
         mediaOverlay,
+        properties,
       });
     }
   }
@@ -90,7 +102,10 @@ function parseManifest(
 /**
  * Parse the spine section of the OPF
  */
-function parseSpine(spineNode: { itemref?: unknown[] }): SpineItem[] {
+function parseSpine(spineNode: {
+  itemref?: unknown[];
+  '@_toc'?: string;
+}): { spine: SpineItem[]; tocId?: string } {
   const spine: SpineItem[] = [];
 
   const items = spineNode?.itemref || [];
@@ -105,7 +120,39 @@ function parseSpine(spineNode: { itemref?: unknown[] }): SpineItem[] {
     }
   }
 
-  return spine;
+  const tocId = spineNode?.['@_toc'];
+
+  return { spine, tocId };
+}
+
+function findNavPath(manifest: Map<string, ManifestItem>): string | undefined {
+  for (const item of manifest.values()) {
+    if (item.properties?.includes('nav')) {
+      return item.href;
+    }
+  }
+
+  return undefined;
+}
+
+function findNcxPath(
+  manifest: Map<string, ManifestItem>,
+  tocId?: string,
+): string | undefined {
+  if (tocId) {
+    const tocItem = manifest.get(tocId);
+    if (tocItem?.mediaType === 'application/x-dtbncx+xml') {
+      return tocItem.href;
+    }
+  }
+
+  for (const item of manifest.values()) {
+    if (item.mediaType === 'application/x-dtbncx+xml') {
+      return item.href;
+    }
+  }
+
+  return undefined;
 }
 
 /**
