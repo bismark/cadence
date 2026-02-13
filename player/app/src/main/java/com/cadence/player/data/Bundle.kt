@@ -94,6 +94,8 @@ data class Page(
     val pageIndex: Int,
     val width: Int,
     val height: Int,
+    val contentX: Float,
+    val contentY: Float,
     val textRuns: List<TextRun>,
     val spanRects: List<PageSpanRect>,
     val firstSpanId: String,

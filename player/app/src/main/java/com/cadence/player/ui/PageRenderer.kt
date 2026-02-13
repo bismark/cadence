@@ -111,7 +111,7 @@ private class TextPaintCache(private val serifFonts: NotoSerifFonts) {
  * Designed for e-ink grayscale rendering
  *
  * Coordinates from bundle are in pixels, matching the device profile.
- * We apply margins as pixel offsets to avoid dp conversion issues.
+ * Run/rect coordinates are page-local and anchored by bundle-provided content origin.
  *
  * @param debugMode When true, renders bounding boxes and baselines for debugging
  * @param onSpanTap Called when user taps on a span, with the span ID
@@ -126,10 +126,8 @@ fun PageRenderer(
     onSpanTap: (String) -> Unit = {},
     onBackgroundTap: () -> Unit = {}
 ) {
-    // Device margins in pixels (matching Supernote Manta profile)
-    // These are added as offsets to drawing coordinates, not as Compose padding
-    val marginLeft = 80f
-    val marginTop = 100f
+    val contentOriginX = page.contentX
+    val contentOriginY = page.contentY
 
     // Load Noto Serif fonts from assets (cached per composition)
     val context = LocalContext.current
@@ -193,9 +191,9 @@ fun PageRenderer(
                             if (!rejected) {
                                 val offset = change.position
 
-                                // Convert tap position to content coordinates (subtract margins)
-                                val contentX = offset.x - marginLeft
-                                val contentY = offset.y - marginTop
+                                // Convert tap position to content-local coordinates.
+                                val contentX = offset.x - contentOriginX
+                                val contentY = offset.y - contentOriginY
 
                                 // Find if tap is within any span rectangle
                                 val tappedSpanId = tapHitTestStats.measure {
@@ -232,7 +230,7 @@ fun PageRenderer(
             if (debugMode) {
                 drawRect(
                     color = Color.LightGray,
-                    topLeft = Offset(marginLeft, marginTop),
+                    topLeft = Offset(contentOriginX, contentOriginY),
                     size = Size(page.width.toFloat(), page.height.toFloat()),
                     style = Stroke(width = 2f)
                 )
@@ -246,7 +244,7 @@ fun PageRenderer(
                 ?.forEach { rect ->
                     drawRect(
                         color = Color(0xFFD0D0D0),
-                        topLeft = Offset(rect.x + marginLeft, rect.y + marginTop),
+                        topLeft = Offset(rect.x + contentOriginX, rect.y + contentOriginY),
                         size = Size(rect.width.toFloat(), rect.height.toFloat())
                     )
                 }
@@ -257,7 +255,7 @@ fun PageRenderer(
                     for (rect in spanRect.rects) {
                         drawRect(
                             color = Color(0xFF00AA00),
-                            topLeft = Offset(rect.x + marginLeft, rect.y + marginTop),
+                            topLeft = Offset(rect.x + contentOriginX, rect.y + contentOriginY),
                             size = Size(rect.width.toFloat(), rect.height.toFloat()),
                             style = Stroke(width = 1f)
                         )
@@ -272,21 +270,21 @@ fun PageRenderer(
                     // Bounding box
                     drawRect(
                         color = Color.Red,
-                        topLeft = Offset(textRun.x + marginLeft, textRun.y + marginTop),
+                        topLeft = Offset(textRun.x + contentOriginX, textRun.y + contentOriginY),
                         size = Size(textRun.width.toFloat(), textRun.height.toFloat()),
                         style = Stroke(width = 1f)
                     )
                     // Baseline
-                    val baseline = textRun.baselineY + marginTop
+                    val baseline = textRun.baselineY + contentOriginY
                     drawLine(
                         color = Color.Blue,
-                        start = Offset(textRun.x + marginLeft, baseline),
-                        end = Offset(textRun.x + marginLeft + textRun.width, baseline),
+                        start = Offset(textRun.x + contentOriginX, baseline),
+                        end = Offset(textRun.x + contentOriginX + textRun.width, baseline),
                         strokeWidth = 1f
                     )
                 }
 
-                drawTextRun(textRun, marginLeft, marginTop, paintCache)
+                drawTextRun(textRun, contentOriginX, contentOriginY, paintCache)
             }
 
             if (PerfLog.enabled) {
@@ -302,16 +300,16 @@ fun PageRenderer(
  */
 private fun DrawScope.drawTextRun(
     textRun: TextRun,
-    marginLeft: Float,
-    marginTop: Float,
+    contentOriginX: Float,
+    contentOriginY: Float,
     paintCache: TextPaintCache
 ) {
     val paint = paintCache.get(textRun.style)
 
     drawContext.canvas.nativeCanvas.drawText(
         textRun.text,
-        textRun.x + marginLeft,
-        textRun.baselineY + marginTop,
+        textRun.x + contentOriginX,
+        textRun.baselineY + contentOriginY,
         paint
     )
 }

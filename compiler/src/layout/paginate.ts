@@ -549,10 +549,6 @@ export async function paginateContent(
             return rect.left >= columnLeft - columnLeftTolerancePx && rect.left < columnRight;
           }
 
-          function roundToPagePrecision(value: number): number {
-            return Math.round(value * 1000) / 1000;
-          }
-
           function toPageCoords(rect: DOMRect): {
             x: number;
             y: number;
@@ -560,10 +556,10 @@ export async function paginateContent(
             height: number;
           } {
             return {
-              x: Math.max(0, roundToPagePrecision(rect.left - columnLeft)),
-              y: roundToPagePrecision(rect.top - marginTop),
-              width: Math.max(0, roundToPagePrecision(rect.width)),
-              height: Math.max(0, roundToPagePrecision(rect.height)),
+              x: Math.max(0, rect.left - columnLeft),
+              y: rect.top - marginTop,
+              width: Math.max(0, rect.width),
+              height: Math.max(0, rect.height),
             };
           }
 
@@ -584,10 +580,10 @@ export async function paginateContent(
             const localBottom = bounds.bottom - marginTop;
 
             return {
-              x: Math.max(0, roundToPagePrecision(localLeft)),
-              y: roundToPagePrecision(localTop),
-              width: Math.max(0, roundToPagePrecision(localRight - localLeft)),
-              height: Math.max(0, roundToPagePrecision(localBottom - localTop)),
+              x: Math.max(0, localLeft),
+              y: localTop,
+              width: Math.max(0, localRight - localLeft),
+              height: Math.max(0, localBottom - localTop),
             };
           }
 
@@ -833,9 +829,8 @@ export async function paginateContent(
               }
 
               const descenderPx = estimateDescenderPx(style);
-              const baselineY = roundToPagePrecision(
-                pageCoords.y + pageCoords.height - Math.min(descenderPx, pageCoords.height),
-              );
+              const baselineY =
+                pageCoords.y + pageCoords.height - Math.min(descenderPx, pageCoords.height);
 
               textRuns.push({
                 text: fragmentText,
@@ -954,7 +949,7 @@ export async function paginateContent(
           // Drop standalone whitespace runs.
           // Their horizontal gaps are already encoded by absolute x positions,
           // and emitting thousands of isolated space-only runs hurts visual quality
-          // once coordinates are rounded for the current bundle format.
+          // while bloating the bundle payload.
           const withoutWhitespaceOnlyRuns = textRuns.filter((run) => !/^\s+$/u.test(run.text));
 
           // Dedupe exact runs (including style), preserving first occurrence order.
@@ -974,8 +969,8 @@ export async function paginateContent(
         {
           colLeft,
           columnWidth,
-          marginTop: profile.margins.top,
-          marginLeft: profile.margins.left,
+          marginTop: contentArea.top,
+          marginLeft: contentArea.left,
           grayLevels: EINK_GRAY_LEVELS,
         },
       );
@@ -989,6 +984,8 @@ export async function paginateContent(
         pageIndex: colIndex,
         width: columnWidth,
         height: columnHeight,
+        contentX: contentArea.left,
+        contentY: contentArea.top,
         textRuns: pageData.textRuns,
         spanRects: pageData.spanRects,
         firstSpanId: visibleSpanIds[0] || '',

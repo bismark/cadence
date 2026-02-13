@@ -44,6 +44,8 @@ export function compactPageStyles(pages: Page[]): CompactPageStylesResult {
       pageIndex: page.pageIndex,
       width: page.width,
       height: page.height,
+      contentX: page.contentX,
+      contentY: page.contentY,
       textRuns,
       spanRects: page.spanRects,
       firstSpanId: page.firstSpanId,

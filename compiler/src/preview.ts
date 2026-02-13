@@ -77,6 +77,8 @@ export async function loadBundle(bundlePath: string): Promise<BundleData> {
       pageIndex: page.pageIndex,
       width: page.width,
       height: page.height,
+      contentX: page.contentX,
+      contentY: page.contentY,
       textRuns,
       spanRects: page.spanRects,
       firstSpanId: page.firstSpanId,
@@ -106,7 +108,7 @@ export function findSpanAtTime(spans: SpanEntry[], timestampMs: number): SpanEnt
  * Generate HTML to render a page with text runs
  */
 function generatePageHTML(page: Page, profile: DeviceProfile, activeSpanId?: string): string {
-  const { margins, viewportWidth, viewportHeight } = profile;
+  const { viewportWidth, viewportHeight } = profile;
 
   const textRunsHtml = page.textRuns
     .map((run) => {
@@ -177,8 +179,8 @@ function generatePageHTML(page: Page, profile: DeviceProfile, activeSpanId?: str
     }
     .content-area {
       position: absolute;
-      left: ${margins.left}px;
-      top: ${margins.top}px;
+      left: ${page.contentX}px;
+      top: ${page.contentY}px;
       width: ${page.width}px;
       height: ${page.height}px;
       background: #ffffff;

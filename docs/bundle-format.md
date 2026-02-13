@@ -104,14 +104,16 @@ Each page file contains geometry and text runs.
   "pageIndex": 0,
   "width": 1404,
   "height": 1872,
+  "contentX": 80,
+  "contentY": 100,
   "textRuns": [
     {
       "text": "Call me Ishmael.",
-      "x": 72,
-      "y": 150,
-      "width": 180,
+      "x": 72.125,
+      "y": 150.5,
+      "width": 180.75,
       "height": 24,
-      "baselineY": 169,
+      "baselineY": 169.35,
       "spanId": "s0",
       "styleId": 0
     }
@@ -120,7 +122,7 @@ Each page file contains geometry and text runs.
     {
       "spanId": "s0",
       "rects": [
-        { "x": 72, "y": 150, "width": 180, "height": 24 }
+        { "x": 72.125, "y": 150.5, "width": 180.75, "height": 24 }
       ]
     }
   ],
@@ -138,7 +140,9 @@ Each page file contains geometry and text runs.
 | `pageIndex` | number | Global 0-based index |
 | `width` | number | Content width in px |
 | `height` | number | Content height in px |
-| `textRuns` | TextRun[] | Positioned text runs |
+| `contentX` | number | Content area origin X in viewport coordinates |
+| `contentY` | number | Content area origin Y in viewport coordinates |
+| `textRuns` | TextRun[] | Positioned text runs (coordinates are page-local; add `contentX`/`contentY` for viewport placement) |
 | `spanRects` | PageSpanRect[] | Highlight rectangles per span |
 | `firstSpanId` | string | First span visible on page |
 | `lastSpanId` | string | Last span visible on page |
@@ -148,11 +152,11 @@ Each page file contains geometry and text runs.
 | Field | Type | Description |
 |---|---|---|
 | `text` | string | Text content |
-| `x` | number | Left position (px) |
-| `y` | number | Top position (px) |
-| `width` | number | Width (px) |
-| `height` | number | Height (px) |
-| `baselineY` | number | Baseline Y in page-local coordinates |
+| `x` | number | Left position in page-local coords (float px) |
+| `y` | number | Top position in page-local coords (float px) |
+| `width` | number | Width (float px) |
+| `height` | number | Height (float px) |
+| `baselineY` | number | Baseline Y in page-local coordinates (float px) |
 | `spanId` | string? | Span ID if synchronized |
 | `styleId` | number | Index into `styles.json` |
 
@@ -167,10 +171,10 @@ Each page file contains geometry and text runs.
 
 | Field | Type | Description |
 |---|---|---|
-| `x` | number | Left |
-| `y` | number | Top |
-| `width` | number | Width |
-| `height` | number | Height |
+| `x` | number | Left (page-local float px) |
+| `y` | number | Top (page-local float px) |
+| `width` | number | Width (float px) |
+| `height` | number | Height (float px) |
 
 ## audio.opus
 

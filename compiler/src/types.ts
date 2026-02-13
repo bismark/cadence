@@ -90,8 +90,10 @@ export interface Page {
   pageId: string;
   chapterId: string;
   pageIndex: number;
-  width: number;
-  height: number;
+  width: number; // Content area width in px
+  height: number; // Content area height in px
+  contentX: number; // Content area origin X in viewport coordinates
+  contentY: number; // Content area origin Y in viewport coordinates
   textRuns: TextRun[];
   spanRects: PageSpanRect[];
   firstSpanId: string;
