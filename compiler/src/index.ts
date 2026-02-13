@@ -53,6 +53,10 @@ import {
   logSmilToDomValidationResult,
   validateSmilToDomTargets,
 } from './validation/smil-targets.js';
+import {
+  logUnsupportedFeatureScanResult,
+  scanUnsupportedFeatures,
+} from './validation/unsupported-features.js';
 import { logValidationResult, validateCompilationResult } from './validation.js';
 
 const program = new Command();
@@ -890,6 +894,15 @@ async function alignEPUB(
       const spineFiles = getSpineXHTMLFiles(opf);
       console.log(`  Spine items: ${spineFiles.length}`);
 
+      console.log('Step 3b: Scanning for unsupported/degraded EPUB features...');
+      try {
+        const featureScan = await scanUnsupportedFeatures(container, opf, spineFiles);
+        logUnsupportedFeatureScanResult(featureScan);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`  Warning: Unsupported-feature scan failed: ${message}`);
+      }
+
       // Step 4: Process each chapter - extract sentences, align, tag
       console.log('');
       console.log('Step 4: Aligning chapters with audio...');
@@ -1384,6 +1397,15 @@ async function compileEPUB(
     // Get linear spine XHTML files (includes content with and without media overlays)
     const spineFiles = getSpineXHTMLFiles(opf);
     console.log(`  Spine items: ${spineFiles.length}`);
+
+    console.log('Step 2b: Scanning for unsupported/degraded EPUB features...');
+    try {
+      const featureScan = await scanUnsupportedFeatures(container, opf, spineFiles);
+      logUnsupportedFeatureScanResult(featureScan);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`  Warning: Unsupported-feature scan failed: ${message}`);
+    }
 
     const chaptersWithSMIL = spineFiles.filter((f) => f.smilHref);
     console.log(`  Chapters with media overlays: ${chaptersWithSMIL.length}`);
