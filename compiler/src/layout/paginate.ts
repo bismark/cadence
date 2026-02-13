@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type Browser, chromium, type Page as PlaywrightPage, type Route } from 'playwright';
+import { didSanitizeCss, sanitizeCssForPagination } from '../css/sanitization.js';
 import { getContentArea } from '../device-profiles/profiles.js';
 import type { DeviceProfile, EPUBContainer, NormalizedContent, Page } from '../types.js';
 
@@ -32,11 +33,7 @@ interface RouteLike {
     headers(): Record<string, string>;
     resourceType(): string;
   };
-  fulfill(options: {
-    status: number;
-    contentType: string;
-    body: string | Buffer;
-  }): Promise<void>;
+  fulfill(options: { status: number; contentType: string; body: string | Buffer }): Promise<void>;
   continue(): Promise<void>;
 }
 
@@ -102,7 +99,10 @@ function encodeEpubPathForUrl(path: string): string {
     return '';
   }
 
-  return normalized.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+  return normalized
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
 }
 
 function decodeVirtualUrlPath(pathname: string): string | null {
@@ -198,6 +198,22 @@ function getContentType(path: string): string {
   }
 }
 
+function isStylesheetResource(
+  requestPath: string,
+  contentType: string,
+  resourceType: string,
+): boolean {
+  if (resourceType.trim().toLowerCase() === 'stylesheet') {
+    return true;
+  }
+
+  if (contentType.toLowerCase().startsWith('text/css')) {
+    return true;
+  }
+
+  return posix.extname(requestPath).toLowerCase() === '.css';
+}
+
 function decodeVirtualUrlToPath(urlString: string): string | null {
   try {
     const url = new URL(urlString);
@@ -238,9 +254,7 @@ export function throwOnPaginationRoutingFailures(
   }
 
   const details = diagnostics.fatalIssues.map((issue) => `  - ${issue}`).join('\n');
-  throw new Error(
-    `Pagination resource policy violations for chapter "${chapterId}":\n${details}`,
-  );
+  throw new Error(`Pagination resource policy violations for chapter "${chapterId}":\n${details}`);
 }
 
 export function createEpubResourceRouteHandler(
@@ -281,10 +295,29 @@ export function createEpubResourceRouteHandler(
 
     try {
       const resource = await container.readFile(requestPath);
+      const contentType = getContentType(requestPath);
+
+      let responseBody: string | Buffer = resource;
+      if (isStylesheetResource(requestPath, contentType, request.resourceType())) {
+        const rawCss = resource.toString('utf-8');
+        const sanitization = sanitizeCssForPagination(rawCss);
+
+        if (didSanitizeCss(sanitization.summary)) {
+          const issue =
+            `sanitized stylesheet "${requestPath}"` +
+            ` (chapter=${content.chapterId}, source=${requestSource}, removedImports=${sanitization.summary.removedImportCount},` +
+            ` rewrittenUrls=${sanitization.summary.rewrittenUrlCount}, removedDeclarations=${sanitization.summary.removedDeclarationCount})`;
+
+          addUniqueIssue(diagnostics.warningIssues, seenWarningIssues, issue);
+        }
+
+        responseBody = sanitization.css;
+      }
+
       await route.fulfill({
         status: 200,
-        contentType: getContentType(requestPath),
-        body: resource,
+        contentType,
+        body: responseBody,
       });
     } catch {
       const critical = isCriticalPaginationResource(requestPath, request.resourceType());

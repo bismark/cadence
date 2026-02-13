@@ -1,5 +1,11 @@
 import { posix } from 'node:path';
 import * as parse5 from 'parse5';
+import {
+  didSanitizeCss,
+  isSafeStylesheetHref,
+  sanitizeCssDeclarationListForPagination,
+  sanitizeCssForPagination,
+} from '../css/sanitization.js';
 import { generateProfileCSS } from '../device-profiles/profiles.js';
 import type { DeviceProfile, EPUBContainer, NormalizedContent, Span } from '../types.js';
 
@@ -7,6 +13,28 @@ type Node = parse5.DefaultTreeAdapterMap['node'];
 type Element = parse5.DefaultTreeAdapterMap['element'];
 type TextNode = parse5.DefaultTreeAdapterMap['textNode'];
 type Document = parse5.DefaultTreeAdapterMap['document'];
+
+interface PublisherStylesExtraction {
+  stylesheetHrefs: string[];
+  blockedStylesheetHrefs: string[];
+  inlineStyleBlocks: string[];
+  sanitizedInlineStyleBlockCount: number;
+  droppedInlineStyleBlockCount: number;
+}
+
+const NON_CONTENT_TAGS = new Set([
+  'script',
+  'style',
+  'title',
+  'meta',
+  'link',
+  'noscript',
+  'iframe',
+  'object',
+  'embed',
+]);
+
+const URL_LIKE_ATTRIBUTES = new Set(['href', 'src', 'xlink:href', 'poster', 'formaction']);
 
 /**
  * Parse and normalize XHTML content for pagination
@@ -60,11 +88,34 @@ export async function normalizeXHTML(
     throw new Error(`No body element found in ${xhtmlPath}`);
   }
 
-  // Extract stylesheet links from source head so relative CSS references can be resolved in Chromium
-  const stylesheetHrefs = extractStylesheetHrefsFromRawHTML(html);
+  const publisherStyles = extractPublisherStylesFromRawHTML(html);
+
+  for (const href of publisherStyles.blockedStylesheetHrefs) {
+    console.warn(`  Warning: Ignoring unsafe stylesheet link "${href}" in ${xhtmlPath}`);
+  }
+
+  if (publisherStyles.sanitizedInlineStyleBlockCount > 0) {
+    console.warn(
+      `  Warning: Sanitized ${publisherStyles.sanitizedInlineStyleBlockCount} inline stylesheet block(s)` +
+        ` in ${xhtmlPath}`,
+    );
+  }
+
+  if (publisherStyles.droppedInlineStyleBlockCount > 0) {
+    console.warn(
+      `  Warning: Dropped ${publisherStyles.droppedInlineStyleBlockCount} inline stylesheet block(s)` +
+        ` after sanitization in ${xhtmlPath}`,
+    );
+  }
 
   // Generate normalized HTML
-  const normalizedHtml = generateNormalizedHTML(body, profile, chapterId, stylesheetHrefs);
+  const normalizedHtml = generateNormalizedHTML(
+    body,
+    profile,
+    chapterId,
+    publisherStyles.stylesheetHrefs,
+    publisherStyles.inlineStyleBlocks,
+  );
 
   // Collect span IDs that are present in this content
   const presentSpanIds = Array.from(fragmentToSpan.values());
@@ -151,24 +202,23 @@ function findBody(document: Document): Element | null {
 }
 
 /**
- * Extract linked stylesheet href values from the raw XHTML head
- * We parse raw HTML to avoid quirks where parse5 reparents head children into body.
+ * Extract publisher CSS from source XHTML.
+ * - linked stylesheets from <head>
+ * - inline <style> blocks (sanitized)
  */
-function extractStylesheetHrefsFromRawHTML(html: string): string[] {
+function extractPublisherStylesFromRawHTML(html: string): PublisherStylesExtraction {
   const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
-  if (!headMatch) {
-    return [];
-  }
+  const headContent = headMatch?.[1] ?? '';
 
-  const headContent = headMatch[1];
-  const hrefs: string[] = [];
-  const seen = new Set<string>();
+  const stylesheetHrefs: string[] = [];
+  const blockedStylesheetHrefs: string[] = [];
+  const seenStylesheetHref = new Set<string>();
 
   const linkTagRegex = /<link\b[^>]*>/gi;
-  let match: RegExpExecArray | null;
+  let linkMatch: RegExpExecArray | null;
 
-  while ((match = linkTagRegex.exec(headContent)) !== null) {
-    const linkTag = match[0];
+  while ((linkMatch = linkTagRegex.exec(headContent)) !== null) {
+    const linkTag = linkMatch[0];
     const rel = (getAttributeFromTag(linkTag, 'rel') || '').toLowerCase();
     const href = getAttributeFromTag(linkTag, 'href');
 
@@ -181,23 +231,68 @@ function extractStylesheetHrefsFromRawHTML(html: string): string[] {
       continue;
     }
 
-    if (!seen.has(href)) {
-      hrefs.push(href);
-      seen.add(href);
+    if (seenStylesheetHref.has(href)) {
+      continue;
     }
+
+    seenStylesheetHref.add(href);
+
+    if (!isSafeStylesheetHref(href)) {
+      blockedStylesheetHrefs.push(href);
+      continue;
+    }
+
+    stylesheetHrefs.push(href);
   }
 
-  return hrefs;
+  const inlineStyleBlocks: string[] = [];
+  let sanitizedInlineStyleBlockCount = 0;
+  let droppedInlineStyleBlockCount = 0;
+
+  const styleTagRegex = /<style\b([^>]*)>([\s\S]*?)<\/style>/gi;
+  let styleMatch: RegExpExecArray | null;
+
+  while ((styleMatch = styleTagRegex.exec(html)) !== null) {
+    const styleTag = `<style${styleMatch[1] ?? ''}>`;
+    const type = (getAttributeFromTag(styleTag, 'type') || '').toLowerCase().trim();
+
+    if (type && type !== 'text/css') {
+      continue;
+    }
+
+    const rawCss = styleMatch[2]?.trim();
+    if (!rawCss) {
+      continue;
+    }
+
+    const sanitization = sanitizeCssForPagination(rawCss);
+    if (didSanitizeCss(sanitization.summary)) {
+      sanitizedInlineStyleBlockCount += 1;
+    }
+
+    const sanitizedCss = sanitization.css.trim();
+    if (!sanitizedCss) {
+      droppedInlineStyleBlockCount += 1;
+      continue;
+    }
+
+    inlineStyleBlocks.push(sanitizedCss);
+  }
+
+  return {
+    stylesheetHrefs,
+    blockedStylesheetHrefs,
+    inlineStyleBlocks,
+    sanitizedInlineStyleBlockCount,
+    droppedInlineStyleBlockCount,
+  };
 }
 
 /**
  * Extract an attribute value from a raw HTML tag
  */
 function getAttributeFromTag(tag: string, attributeName: string): string | null {
-  const regex = new RegExp(
-    `\\b${attributeName}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'>]+))`,
-    'i',
-  );
+  const regex = new RegExp(`\\b${attributeName}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i');
   const match = tag.match(regex);
 
   if (!match) {
@@ -208,13 +303,19 @@ function getAttributeFromTag(tag: string, attributeName: string): string | null 
 }
 
 /**
- * Generate normalized HTML with proper CSS for pagination
+ * Generate normalized HTML with publisher CSS + profile overrides.
+ *
+ * CSS precedence:
+ * 1) Linked publisher stylesheets
+ * 2) Inline publisher style blocks (sanitized)
+ * 3) Cadence profile CSS (authoritative for viewport/margins/font policy)
  */
 function generateNormalizedHTML(
   body: Element,
   profile: DeviceProfile,
   chapterId: string,
   stylesheetHrefs: string[],
+  inlineStyleBlocks: string[],
 ): string {
   const css = generateProfileCSS(profile);
   const bodyContent = serializeChildren(body);
@@ -222,12 +323,16 @@ function generateNormalizedHTML(
     .map((href) => `  <link rel="stylesheet" href="${escapeAttr(href)}">`)
     .join('\n');
 
+  const inlineStyles = inlineStyleBlocks
+    .map((styleBlock) => `  <style>${styleBlock}</style>`)
+    .join('\n');
+
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=${profile.viewportWidth}, height=${profile.viewportHeight}">
-${stylesheetLinks ? `${stylesheetLinks}\n` : ''}  <style>${css}</style>
+${stylesheetLinks ? `${stylesheetLinks}\n` : ''}${inlineStyles ? `${inlineStyles}\n` : ''}  <style>${css}</style>
 </head>
 <body>
   <div class="cadence-content" data-chapter-id="${escapeAttr(chapterId)}">
@@ -257,14 +362,8 @@ function serializeNode(node: Node): string {
   }
 
   if (isElement(node)) {
-    // Skip non-content elements
-    if (
-      node.tagName === 'script' ||
-      node.tagName === 'style' ||
-      node.tagName === 'title' ||
-      node.tagName === 'meta' ||
-      node.tagName === 'link'
-    ) {
+    // Skip non-content / unsafe elements
+    if (NON_CONTENT_TAGS.has(node.tagName)) {
       return '';
     }
 
@@ -306,7 +405,42 @@ function serializeAttributes(element: Element): string {
     return '';
   }
 
-  return element.attrs.map((attr) => ` ${attr.name}="${escapeAttr(attr.value)}"`).join('');
+  const serializedAttributes: string[] = [];
+
+  for (const attr of element.attrs) {
+    const name = attr.name;
+    const lowerName = name.toLowerCase();
+
+    // Drop event handler attributes (onclick, onload, ...)
+    if (lowerName.startsWith('on')) {
+      continue;
+    }
+
+    // Drop script URL payloads in href/src-like attributes.
+    if (URL_LIKE_ATTRIBUTES.has(lowerName) && isUnsafeScriptUrl(attr.value)) {
+      continue;
+    }
+
+    if (lowerName === 'style') {
+      const styleSanitization = sanitizeCssDeclarationListForPagination(attr.value);
+      const sanitizedStyle = styleSanitization.css.trim();
+      if (!sanitizedStyle) {
+        continue;
+      }
+
+      serializedAttributes.push(` ${name}="${escapeAttr(sanitizedStyle)}"`);
+      continue;
+    }
+
+    serializedAttributes.push(` ${name}="${escapeAttr(attr.value)}"`);
+  }
+
+  return serializedAttributes.join('');
+}
+
+function isUnsafeScriptUrl(value: string): boolean {
+  const normalized = value.trim().replace(/\s+/g, '').toLowerCase();
+  return normalized.startsWith('javascript:') || normalized.startsWith('vbscript:');
 }
 
 /**

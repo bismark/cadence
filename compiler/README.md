@@ -39,6 +39,25 @@ node dist/index.js compile -i path/to/book.epub -p supernote-manta-a5x2
 node dist/index.js compile -i path/to/book.epub --strict
 ```
 
+## Publisher CSS handling (reflowable content)
+
+For `compile` builds, Cadence preserves publisher styling by default and applies a safety filter before pagination.
+
+CSS precedence order in normalized chapter HTML:
+
+1. Linked publisher stylesheets (`<link rel="stylesheet">`) with package-local hrefs
+2. Publisher inline `<style>` blocks (sanitized)
+3. Cadence profile CSS overrides (authoritative for viewport, margins, and base font policy)
+
+Safety filter behavior:
+
+- Reject stylesheet links with protocol/absolute origins (e.g. `https://...`, `data:...`, `javascript:...`)
+- Remove unsafe `@import` targets and rewrite unsafe `url(...)` values to `url("")`
+- Strip legacy scriptable CSS declarations (e.g. `behavior`, `-moz-binding`, `expression(...)`)
+- Drop HTML event-handler attributes (e.g. `onclick`) and `javascript:` / `vbscript:` URL attributes during XHTML normalization
+
+This keeps useful book CSS in place while enforcing Cadence’s device-profile layout envelope.
+
 ## Running Tests
 
 ### Manual Testing

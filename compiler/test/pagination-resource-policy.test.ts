@@ -14,11 +14,7 @@ type MockRoute = {
     headers(): Record<string, string>;
     resourceType(): string;
   };
-  fulfill(options: {
-    status: number;
-    contentType: string;
-    body: string | Buffer;
-  }): Promise<void>;
+  fulfill(options: { status: number; contentType: string; body: string | Buffer }): Promise<void>;
   continue(): Promise<void>;
   fulfilledStatuses: number[];
   continuedCount: number;
@@ -65,6 +61,21 @@ function createMissingResourceContainer(): EPUBContainer {
       throw new Error('missing');
     },
     listFiles: async () => [],
+    close: async () => {},
+  };
+}
+
+function createStylesheetContainer(css: string): EPUBContainer {
+  return {
+    opfPath: 'OEBPS/content.opf',
+    readFile: async (path: string) => {
+      if (path !== 'OEBPS/styles/base.css') {
+        throw new Error('missing');
+      }
+
+      return Buffer.from(css, 'utf-8');
+    },
+    listFiles: async () => ['OEBPS/styles/base.css'],
     close: async () => {},
   };
 }
@@ -130,11 +141,32 @@ describe('pagination resource request policy', () => {
 
     expect(route.fulfilledStatuses).toEqual([404]);
     expect(diagnostics.fatalIssues).toHaveLength(1);
-    expect(diagnostics.fatalIssues[0]).toContain('missing EPUB resource "OEBPS/styles/missing.css"');
+    expect(diagnostics.fatalIssues[0]).toContain(
+      'missing EPUB resource "OEBPS/styles/missing.css"',
+    );
 
     expect(() => throwOnPaginationRoutingFailures(testContent.chapterId, diagnostics)).toThrow(
       /Pagination resource policy violations/,
     );
+  });
+
+  it('records warnings when stylesheet content is sanitized', async () => {
+    const diagnostics = createPaginationRoutingDiagnostics();
+    const handler = createEpubResourceRouteHandler(
+      createStylesheetContainer(
+        '.cover { background-image: url("https://evil.example.com/x.png"); color: #111; }',
+      ),
+      testContent,
+      diagnostics,
+    );
+
+    const route = createMockRoute('https://epub.local/OEBPS/styles/base.css', 'stylesheet');
+    await handler(route);
+
+    expect(route.fulfilledStatuses).toEqual([200]);
+    expect(diagnostics.fatalIssues).toHaveLength(0);
+    expect(diagnostics.warningIssues).toHaveLength(1);
+    expect(diagnostics.warningIssues[0]).toContain('sanitized stylesheet');
   });
 
   it('keeps missing non-critical assets as warnings', async () => {

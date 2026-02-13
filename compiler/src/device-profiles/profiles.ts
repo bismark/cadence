@@ -65,42 +65,29 @@ export function generateProfileCSS(profile: DeviceProfile): string {
   const content = getContentArea(profile);
 
   return `
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
     html, body {
-      width: ${profile.viewportWidth}px;
-      height: ${profile.viewportHeight}px;
-      overflow: hidden;
+      width: ${profile.viewportWidth}px !important;
+      height: ${profile.viewportHeight}px !important;
+      overflow: hidden !important;
     }
 
     body {
-      font-family: ${profile.fontFamily};
-      font-size: ${profile.fontSize}px;
-      line-height: ${profile.lineHeight};
-      padding: ${profile.margins.top}px ${profile.margins.right}px ${profile.margins.bottom}px ${profile.margins.left}px;
+      margin: 0 !important;
+      padding: ${profile.margins.top}px ${profile.margins.right}px ${profile.margins.bottom}px ${profile.margins.left}px !important;
+      font-family: ${profile.fontFamily} !important;
+      font-size: ${profile.fontSize}px !important;
+      line-height: ${profile.lineHeight} !important;
     }
 
     .cadence-content {
-      width: ${content.width}px;
-      height: ${content.height}px;
-      overflow-y: scroll;
-      overflow-x: hidden;
+      width: ${content.width}px !important;
+      height: ${content.height}px !important;
+      overflow-y: scroll !important;
+      overflow-x: hidden !important;
     }
 
     [data-span-id] {
       /* Spans are inline by default for text highlighting */
     }
-
-    p, h1, h2, h3, h4, h5, h6 {
-      margin-bottom: 0.5em;
-    }
-
-    h1 { font-size: 1.5em; }
-    h2 { font-size: 1.3em; }
-    h3 { font-size: 1.1em; }
   `;
 }

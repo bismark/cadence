@@ -5,6 +5,7 @@ import { openEPUB } from '../src/epub/container.js';
 import { getSpineXHTMLFiles, parseOPF } from '../src/epub/opf.js';
 import { parseChapterSMIL } from '../src/epub/smil.js';
 import { normalizeXHTML } from '../src/epub/xhtml.js';
+import type { EPUBContainer, Span } from '../src/types.js';
 
 describe('XHTML normalization', () => {
   it('preserves stylesheet links and source XHTML path for chapters', async () => {
@@ -92,4 +93,86 @@ describe('XHTML normalization', () => {
       await container.close();
     }
   });
+
+  it('sanitizes unsafe publisher CSS constructs while keeping local styling', async () => {
+    const chapterPath = 'OPS/chapter-1.xhtml';
+    const container = createInMemoryContainer({
+      [chapterPath]: `
+        <html xmlns="http://www.w3.org/1999/xhtml">
+          <head>
+            <link rel="stylesheet" href="styles/base.css" />
+            <link rel="stylesheet" href="https://evil.example.com/theme.css" />
+            <style>
+              @import url("https://evil.example.com/remote.css");
+              @import url("styles/local.css");
+              .safe { color: #222; }
+              .unsafe-bg { background-image: url('https://evil.example.com/pixel.png'); }
+            </style>
+          </head>
+          <body>
+            <p id="frag1" onclick="alert('x')" style="background-image:url(https://evil.example.com/img.png); color: #111;">
+              Hello world
+            </p>
+            <a href="javascript:alert('x')">bad link</a>
+          </body>
+        </html>
+      `,
+    });
+
+    const spans: Span[] = [
+      {
+        id: 'span-1',
+        chapterId: 'chapter-1',
+        textRef: `${chapterPath}#frag1`,
+        audioSrc: 'audio.mp3',
+        clipBeginMs: 0,
+        clipEndMs: 1000,
+      },
+    ];
+
+    const normalized = await normalizeXHTML(
+      container,
+      chapterPath,
+      'chapter-1',
+      spans,
+      defaultProfile,
+    );
+
+    expect(normalized.html).toContain('<link rel="stylesheet" href="styles/base.css">');
+    expect(normalized.html).not.toContain('https://evil.example.com/theme.css');
+    expect(normalized.html).toContain('@import url("styles/local.css");');
+    expect(normalized.html).not.toContain('@import url("https://evil.example.com/remote.css");');
+    expect(normalized.html).not.toContain('https://evil.example.com/pixel.png');
+    expect(normalized.html).toContain('url("")');
+
+    expect(normalized.html).not.toContain('onclick=');
+    expect(normalized.html).not.toContain('href="javascript:');
+    expect(normalized.html).toContain('color: #111');
+    expect(normalized.html).toContain('data-span-id="span-1"');
+
+    const inlineStyleIndex = normalized.html.indexOf('.safe { color: #222; }');
+    const profileStyleIndex = normalized.html.lastIndexOf('<style>');
+    expect(inlineStyleIndex).toBeGreaterThan(-1);
+    expect(profileStyleIndex).toBeGreaterThan(inlineStyleIndex);
+  });
 });
+
+function createInMemoryContainer(files: Record<string, string>): EPUBContainer {
+  return {
+    opfPath: 'OPS/content.opf',
+    async readFile(path: string): Promise<Buffer> {
+      const file = files[path];
+      if (file === undefined) {
+        throw new Error(`Missing file: ${path}`);
+      }
+
+      return Buffer.from(file, 'utf-8');
+    },
+    async listFiles(): Promise<string[]> {
+      return Object.keys(files);
+    },
+    async close(): Promise<void> {
+      // no-op
+    },
+  };
+}
