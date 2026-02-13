@@ -222,3 +222,62 @@ export function getAudioFiles(opf: OPFPackage): string[] {
 
   return audioFiles;
 }
+
+interface AudioSpanLike {
+  audioSrc: string;
+  clipBeginMs: number;
+  clipEndMs: number;
+}
+
+/**
+ * Derive audio concatenation order from first appearance in the timed span stream.
+ *
+ * Any manifest audio that is never referenced by timed spans is appended in manifest
+ * order to keep output deterministic.
+ */
+export function getAudioFilesInFirstSpanUseOrder(
+  opf: OPFPackage,
+  spans: ReadonlyArray<AudioSpanLike>,
+): string[] {
+  const manifestAudioFiles = getAudioFiles(opf);
+  if (manifestAudioFiles.length === 0) {
+    return [];
+  }
+
+  const manifestAudioSet = new Set(manifestAudioFiles);
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+
+  for (const span of spans) {
+    if (!isTimedSpan(span)) {
+      continue;
+    }
+
+    if (!manifestAudioSet.has(span.audioSrc)) {
+      continue;
+    }
+
+    if (seen.has(span.audioSrc)) {
+      continue;
+    }
+
+    seen.add(span.audioSrc);
+    ordered.push(span.audioSrc);
+  }
+
+  // Keep deterministic behavior for unreferenced manifest audio assets.
+  for (const audioPath of manifestAudioFiles) {
+    if (seen.has(audioPath)) {
+      continue;
+    }
+
+    seen.add(audioPath);
+    ordered.push(audioPath);
+  }
+
+  return ordered;
+}
+
+function isTimedSpan(span: AudioSpanLike): boolean {
+  return span.clipBeginMs >= 0 && span.clipEndMs > span.clipBeginMs;
+}

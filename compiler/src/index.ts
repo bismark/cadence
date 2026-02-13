@@ -28,7 +28,11 @@ import { compactSpanIds } from './bundle/compact-span-ids.js';
 import { writeBundle, writeBundleUncompressed } from './bundle/writer.js';
 import { getProfile, profiles } from './device-profiles/profiles.js';
 import { openEPUB } from './epub/container.js';
-import { getAudioFiles, getSpineXHTMLFiles, parseOPF } from './epub/opf.js';
+import {
+  getAudioFilesInFirstSpanUseOrder,
+  getSpineXHTMLFiles,
+  parseOPF,
+} from './epub/opf.js';
 import { parseChapterSMIL } from './epub/smil.js';
 import { buildTocEntries } from './epub/toc.js';
 import { normalizeXHTML } from './epub/xhtml.js';
@@ -1481,7 +1485,7 @@ async function compileEPUB(
 
     // Step 7: Collect audio files
     console.log('Step 7: Collecting audio files...');
-    const audioFiles = getAudioFiles(opf);
+    const audioFiles = getAudioFilesInFirstSpanUseOrder(opf, spans);
     console.log(`  Audio files: ${audioFiles.length}`);
 
     // Step 8: Write bundle

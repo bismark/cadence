@@ -1,0 +1,40 @@
+{
+  "manifestAudioOrder": [
+    "OPS/audio/chapter-2.mp3",
+    "OPS/audio/unused-stinger.mp3",
+    "OPS/audio/chapter-1.mp3",
+    "OPS/audio/chapter-3.mp3"
+  ],
+  "spans": [
+    {
+      "audioSrc": "OPS/audio/chapter-1.mp3",
+      "clipBeginMs": 0,
+      "clipEndMs": 900
+    },
+    {
+      "audioSrc": "OPS/audio/chapter-1.mp3",
+      "clipBeginMs": 900,
+      "clipEndMs": 1800
+    },
+    {
+      "audioSrc": "OPS/audio/chapter-2.mp3",
+      "clipBeginMs": 0,
+      "clipEndMs": 700
+    },
+    {
+      "audioSrc": "OPS/audio/chapter-2.mp3",
+      "clipBeginMs": 700,
+      "clipEndMs": 1400
+    },
+    {
+      "audioSrc": "OPS/audio/chapter-3.mp3",
+      "clipBeginMs": 0,
+      "clipEndMs": 0
+    },
+    {
+      "audioSrc": "OPS/audio/chapter-3.mp3",
+      "clipBeginMs": 0,
+      "clipEndMs": 1000
+    }
+  ]
+}
