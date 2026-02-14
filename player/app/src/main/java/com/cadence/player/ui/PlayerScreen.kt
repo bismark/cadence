@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.cadence.player.audio.AudioPlayer
 import com.cadence.player.data.CadenceBundle
@@ -427,21 +428,26 @@ private fun PlayerControls(
                     .background(Color.Black)
             )
 
+            // Keep controls within compiler-reserved bottom margin (200px on Manta profile)
+            // while increasing touch targets for reliable taps on e-ink hardware.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                EInkButton(onClick = onPreviousPage) {
+                EInkButton(
+                    onClick = onPreviousPage,
+                    minWidth = 120.dp
+                ) {
                     Text("< Prev")
                 }
 
                 EInkButton(
                     onClick = onPlayPause,
                     filled = true,
-                    modifier = Modifier.width(90.dp)
+                    minWidth = 132.dp
                 ) {
                     Text(if (isPlaying) "Pause" else "Play")
                 }
@@ -456,11 +462,18 @@ private fun PlayerControls(
                     color = Color.Black
                 )
 
-                EInkButton(onClick = onNextPage) {
+                EInkButton(
+                    onClick = onNextPage,
+                    minWidth = 120.dp
+                ) {
                     Text("Next >")
                 }
 
-                EInkButton(onClick = onDebugToggle, filled = debugMode) {
+                EInkButton(
+                    onClick = onDebugToggle,
+                    filled = debugMode,
+                    minWidth = 120.dp
+                ) {
                     Text("Debug")
                 }
             }
@@ -479,6 +492,8 @@ private fun EInkButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     filled: Boolean = false,
+    minWidth: Dp = 104.dp,
+    minHeight: Dp = 56.dp,
     content: @Composable () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -494,6 +509,7 @@ private fun EInkButton(
 
     Box(
         modifier = modifier
+            .sizeIn(minWidth = minWidth, minHeight = minHeight)
             .border(
                 width = 1.dp,
                 color = Color.Black,
@@ -505,7 +521,7 @@ private fun EInkButton(
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 20.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         CompositionLocalProvider(LocalContentColor provides contentColor) {
