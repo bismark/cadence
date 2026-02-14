@@ -1,6 +1,7 @@
 package com.cadence.player.data
 
 import kotlinx.serialization.Serializable
+import java.io.File
 
 /**
  * Bundle metadata from meta.json
@@ -115,7 +116,7 @@ data class CadenceBundle(
     /**
      * Path to the single bundle audio file
      */
-    val audioPath: String get() = "$basePath/${meta.audioFile}"
+    val audioPath: String = resolveBundleAudioPath(basePath, meta.audioFile)
 
     private val timedSpans: List<SpanEntry> by lazy {
         spans
@@ -171,4 +172,31 @@ data class CadenceBundle(
      * Get span by ID in O(1) time
      */
     fun getSpanById(id: String): SpanEntry? = spanIndex[id]
+
+    private fun resolveBundleAudioPath(basePath: String, audioFile: String): String {
+        val value = audioFile.trim()
+        require(value.isNotEmpty()) { "Invalid meta.audioFile: value is empty" }
+
+        val isUnixAbsolute = value.startsWith("/") || value.startsWith("\\")
+        require(!isUnixAbsolute && !WINDOWS_ABSOLUTE_PATH_REGEX.matches(value)) {
+            "Invalid meta.audioFile \"$audioFile\": absolute paths are not allowed"
+        }
+
+        val baseDir = File(basePath).canonicalFile
+        val resolvedPath = File(baseDir, value).canonicalFile
+
+        require(resolvedPath.toPath().startsWith(baseDir.toPath())) {
+            "Invalid meta.audioFile \"$audioFile\": path escapes bundle directory"
+        }
+
+        require(resolvedPath.exists() && resolvedPath.isFile) {
+            "Audio file referenced by meta.audioFile was not found: $audioFile"
+        }
+
+        return resolvedPath.absolutePath
+    }
+
+    private companion object {
+        private val WINDOWS_ABSOLUTE_PATH_REGEX = Regex("^[a-zA-Z]:([/\\\\].*|$)")
+    }
 }
