@@ -7,7 +7,7 @@
     "adb",
     "feature"
   ],
-  "status": "open",
+  "status": "closed",
   "created_at": "2026-02-10T16:56:51.611Z"
 }
 
