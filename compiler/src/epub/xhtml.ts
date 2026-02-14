@@ -14,10 +14,19 @@ type Element = parse5.DefaultTreeAdapterMap['element'];
 type TextNode = parse5.DefaultTreeAdapterMap['textNode'];
 type Document = parse5.DefaultTreeAdapterMap['document'];
 
+type PublisherStyleNode =
+  | {
+      kind: 'stylesheet-link';
+      href: string;
+    }
+  | {
+      kind: 'inline-style';
+      css: string;
+    };
+
 interface PublisherStylesExtraction {
-  stylesheetHrefs: string[];
+  styleNodes: PublisherStyleNode[];
   blockedStylesheetHrefs: string[];
-  inlineStyleBlocks: string[];
   sanitizedInlineStyleBlockCount: number;
   droppedInlineStyleBlockCount: number;
 }
@@ -66,8 +75,8 @@ export async function normalizeXHTML(
       continue;
     }
 
-    const textRefPath = normalizeEpubPath(span.textRef.slice(0, hashIndex));
-    if (textRefPath !== chapterPath) {
+    const textRefPath = span.textRef.slice(0, hashIndex);
+    if (!isTextRefPathForChapter(textRefPath, chapterPath)) {
       continue;
     }
 
@@ -88,7 +97,7 @@ export async function normalizeXHTML(
     throw new Error(`No body element found in ${xhtmlPath}`);
   }
 
-  const publisherStyles = extractPublisherStylesFromRawHTML(html);
+  const publisherStyles = extractPublisherStyles(html);
 
   for (const href of publisherStyles.blockedStylesheetHrefs) {
     console.warn(`  Warning: Ignoring unsafe stylesheet link "${href}" in ${xhtmlPath}`);
@@ -113,8 +122,7 @@ export async function normalizeXHTML(
     body,
     profile,
     chapterId,
-    publisherStyles.stylesheetHrefs,
-    publisherStyles.inlineStyleBlocks,
+    publisherStyles.styleNodes,
   );
 
   // Collect span IDs that are present in this content
@@ -137,6 +145,39 @@ function normalizeEpubPath(path: string): string {
   }
 
   return normalizedPath.replace(/^\/+/, '');
+}
+
+function decodePathSegment(segment: string): string {
+  if (!segment) {
+    return '';
+  }
+
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function normalizeEpubPathForComparison(path: string): string {
+  const normalizedPath = normalizeEpubPath(path);
+  if (!normalizedPath) {
+    return '';
+  }
+
+  const decodedSegments = normalizedPath.split('/').map((segment) => decodePathSegment(segment));
+  return normalizeEpubPath(decodedSegments.join('/'));
+}
+
+function isTextRefPathForChapter(textRefPath: string, chapterPath: string): boolean {
+  if (!textRefPath) {
+    // Fragment-only textRef targets refer to the current chapter document.
+    return true;
+  }
+
+  return (
+    normalizeEpubPathForComparison(textRefPath) === normalizeEpubPathForComparison(chapterPath)
+  );
 }
 
 function decodeTextRefFragment(fragment: string): string {
@@ -202,65 +243,64 @@ function findBody(document: Document): Element | null {
 }
 
 /**
- * Extract publisher CSS from source XHTML.
+ * Extract publisher CSS from source XHTML in original head-node order.
  * - linked stylesheets from <head>
  * - inline <style> blocks (sanitized)
  */
-function extractPublisherStylesFromRawHTML(html: string): PublisherStylesExtraction {
+function extractPublisherStyles(html: string): PublisherStylesExtraction {
   const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
   const headContent = headMatch?.[1] ?? '';
+  const headFragment = parse5.parseFragment(headContent);
 
-  const stylesheetHrefs: string[] = [];
+  const styleNodes: PublisherStyleNode[] = [];
   const blockedStylesheetHrefs: string[] = [];
   const seenStylesheetHref = new Set<string>();
-
-  const linkTagRegex = /<link\b[^>]*>/gi;
-  let linkMatch: RegExpExecArray | null;
-
-  while ((linkMatch = linkTagRegex.exec(headContent)) !== null) {
-    const linkTag = linkMatch[0];
-    const rel = (getAttributeFromTag(linkTag, 'rel') || '').toLowerCase();
-    const href = getAttributeFromTag(linkTag, 'href');
-
-    if (!href) {
-      continue;
-    }
-
-    const relTokens = rel.split(/\s+/).filter(Boolean);
-    if (!relTokens.includes('stylesheet')) {
-      continue;
-    }
-
-    if (seenStylesheetHref.has(href)) {
-      continue;
-    }
-
-    seenStylesheetHref.add(href);
-
-    if (!isSafeStylesheetHref(href)) {
-      blockedStylesheetHrefs.push(href);
-      continue;
-    }
-
-    stylesheetHrefs.push(href);
-  }
-
-  const inlineStyleBlocks: string[] = [];
   let sanitizedInlineStyleBlockCount = 0;
   let droppedInlineStyleBlockCount = 0;
 
-  const styleTagRegex = /<style\b([^>]*)>([\s\S]*?)<\/style>/gi;
-  let styleMatch: RegExpExecArray | null;
+  for (const child of headFragment.childNodes) {
+    if (!isElement(child)) {
+      continue;
+    }
 
-  while ((styleMatch = styleTagRegex.exec(html)) !== null) {
-    const styleTag = `<style${styleMatch[1] ?? ''}>`;
-    const type = (getAttributeFromTag(styleTag, 'type') || '').toLowerCase().trim();
+    if (child.tagName === 'link') {
+      const rel = (getAttribute(child, 'rel') || '').toLowerCase();
+      const href = getAttribute(child, 'href');
 
+      if (!href) {
+        continue;
+      }
+
+      const relTokens = rel.split(/\s+/).filter(Boolean);
+      if (!relTokens.includes('stylesheet')) {
+        continue;
+      }
+
+      if (seenStylesheetHref.has(href)) {
+        continue;
+      }
+
+      seenStylesheetHref.add(href);
+
+      if (!isSafeStylesheetHref(href)) {
+        blockedStylesheetHrefs.push(href);
+        continue;
+      }
+
+      styleNodes.push({ kind: 'stylesheet-link', href });
+      continue;
+    }
+
+    if (child.tagName !== 'style') {
+      continue;
+    }
+
+    const type = (getAttribute(child, 'type') || '').toLowerCase().trim();
     if (type && type !== 'text/css') {
       continue;
     }
 
-    const rawCss = styleMatch[2]?.trim();
+    const rawCss = extractElementTextContent(child).trim();
     if (!rawCss) {
       continue;
     }
@@ -276,55 +316,52 @@ function extractPublisherStylesFromRawHTML(html: string): PublisherStylesExtract
       continue;
     }
 
-    inlineStyleBlocks.push(sanitizedCss);
+    styleNodes.push({ kind: 'inline-style', css: sanitizedCss });
   }
 
   return {
-    stylesheetHrefs,
+    styleNodes,
     blockedStylesheetHrefs,
-    inlineStyleBlocks,
     sanitizedInlineStyleBlockCount,
     droppedInlineStyleBlockCount,
   };
 }
 
-/**
- * Extract an attribute value from a raw HTML tag
- */
-function getAttributeFromTag(tag: string, attributeName: string): string | null {
-  const regex = new RegExp(`\\b${attributeName}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i');
-  const match = tag.match(regex);
+function extractElementTextContent(element: Element): string {
+  let text = '';
 
-  if (!match) {
-    return null;
+  for (const child of element.childNodes) {
+    if (isTextNode(child)) {
+      text += child.value;
+    }
   }
 
-  return match[2] ?? match[3] ?? match[4] ?? null;
+  return text;
 }
 
 /**
  * Generate normalized HTML with publisher CSS + profile overrides.
  *
  * CSS precedence:
- * 1) Linked publisher stylesheets
- * 2) Inline publisher style blocks (sanitized)
- * 3) Cadence profile CSS (authoritative for viewport/margins/font policy)
+ * 1) Publisher style nodes in original source order (<link>/<style> interleaving preserved)
+ * 2) Cadence profile CSS (authoritative for viewport/margins/font policy)
  */
 function generateNormalizedHTML(
   body: Element,
   profile: DeviceProfile,
   chapterId: string,
-  stylesheetHrefs: string[],
-  inlineStyleBlocks: string[],
+  publisherStyleNodes: PublisherStyleNode[],
 ): string {
   const css = generateProfileCSS(profile);
   const bodyContent = serializeChildren(body);
-  const stylesheetLinks = stylesheetHrefs
-    .map((href) => `  <link rel="stylesheet" href="${escapeAttr(href)}">`)
-    .join('\n');
+  const publisherStyles = publisherStyleNodes
+    .map((node) => {
+      if (node.kind === 'stylesheet-link') {
+        return `  <link rel="stylesheet" href="${escapeAttr(node.href)}">`;
+      }
 
-  const inlineStyles = inlineStyleBlocks
-    .map((styleBlock) => `  <style>${styleBlock}</style>`)
+      return `  <style>${node.css}</style>`;
+    })
     .join('\n');
 
   return `<!DOCTYPE html>
@@ -332,7 +369,7 @@ function generateNormalizedHTML(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=${profile.viewportWidth}, height=${profile.viewportHeight}">
-${stylesheetLinks ? `${stylesheetLinks}\n` : ''}${inlineStyles ? `${inlineStyles}\n` : ''}  <style>${css}</style>
+${publisherStyles ? `${publisherStyles}\n` : ''}  <style>${css}</style>
 </head>
 <body>
   <div class="cadence-content" data-chapter-id="${escapeAttr(chapterId)}">

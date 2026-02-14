@@ -37,7 +37,11 @@ export async function buildTocEntries(
   }
 
   const chapterIdByPath = buildChapterIdByPath(spineFiles);
-  const resolvedToc = flattenNavigationItems(navigationItems, chapterIdByPath, firstPageByChapterId);
+  const resolvedToc = flattenNavigationItems(
+    navigationItems,
+    chapterIdByPath,
+    firstPageByChapterId,
+  );
 
   return resolvedToc.length > 0 ? resolvedToc : fallbackToc;
 }
@@ -73,7 +77,10 @@ async function extractNavigationItems(
   return [];
 }
 
-async function parseNavDocument(container: EPUBContainer, navPath: string): Promise<TocTargetNode[]> {
+async function parseNavDocument(
+  container: EPUBContainer,
+  navPath: string,
+): Promise<TocTargetNode[]> {
   const navXml = stripBom((await container.readFile(navPath)).toString('utf-8'));
   const parsed = parser.parse(navXml);
 
@@ -84,8 +91,7 @@ async function parseNavDocument(container: EPUBContainer, navPath: string): Prom
     return [];
   }
 
-  const listNode =
-    getDirectChildrenByLocalName(tocNav, 'ol')[0] ?? getDirectChildrenByLocalName(tocNav, 'ul')[0];
+  const listNode = findFirstDescendantListNode(tocNav);
 
   if (!listNode) {
     return [];
@@ -98,11 +104,7 @@ function parseHtmlTocList(listNode: XmlNode, sourcePath: string): TocTargetNode[
   const result: TocTargetNode[] = [];
 
   for (const listItemNode of getDirectChildrenByLocalName(listNode, 'li')) {
-    const childListNodes = [
-      ...getDirectChildrenByLocalName(listItemNode, 'ol'),
-      ...getDirectChildrenByLocalName(listItemNode, 'ul'),
-    ];
-
+    const childListNodes = findChildListsForListItem(listItemNode);
     const children = childListNodes.flatMap((node) => parseHtmlTocList(node, sourcePath));
 
     const anchorNode = findFirstAnchorOutsideNestedLists(listItemNode);
@@ -130,6 +132,62 @@ function parseHtmlTocList(listNode: XmlNode, sourcePath: string): TocTargetNode[
   return result;
 }
 
+function findFirstDescendantListNode(node: XmlNode): XmlNode | null {
+  for (const [key, value] of Object.entries(node)) {
+    if (key === '#text' || key.startsWith('@_')) {
+      continue;
+    }
+
+    const localName = getLocalName(key);
+    const childNodes = toXmlNodeArray(value);
+
+    if (localName === 'ol' || localName === 'ul') {
+      return childNodes[0] ?? null;
+    }
+
+    for (const childNode of childNodes) {
+      const nestedList = findFirstDescendantListNode(childNode);
+      if (nestedList) {
+        return nestedList;
+      }
+    }
+  }
+
+  return null;
+}
+
+function findChildListsForListItem(listItemNode: XmlNode): XmlNode[] {
+  const childLists: XmlNode[] = [];
+  collectChildListsForListItem(listItemNode, childLists);
+  return childLists;
+}
+
+function collectChildListsForListItem(node: XmlNode, childLists: XmlNode[]): void {
+  for (const [key, value] of Object.entries(node)) {
+    if (key === '#text' || key.startsWith('@_')) {
+      continue;
+    }
+
+    const localName = getLocalName(key);
+    const childNodes = toXmlNodeArray(value);
+
+    if (localName === 'ol' || localName === 'ul') {
+      childLists.push(...childNodes);
+      continue;
+    }
+
+    // Stop traversal at nested list items so we only collect lists that belong
+    // to this list item (not deeper descendants' child lists).
+    if (localName === 'li') {
+      continue;
+    }
+
+    for (const childNode of childNodes) {
+      collectChildListsForListItem(childNode, childLists);
+    }
+  }
+}
+
 function isTocNavNode(node: XmlNode): boolean {
   const epubType = getAttributeValue(node, 'type');
   const role = getAttributeValue(node, 'role');
@@ -141,7 +199,10 @@ function isTocNavNode(node: XmlNode): boolean {
   return false;
 }
 
-async function parseNcxDocument(container: EPUBContainer, ncxPath: string): Promise<TocTargetNode[]> {
+async function parseNcxDocument(
+  container: EPUBContainer,
+  ncxPath: string,
+): Promise<TocTargetNode[]> {
   const ncxXml = stripBom((await container.readFile(ncxPath)).toString('utf-8'));
   const parsed = parser.parse(ncxXml);
 
@@ -158,7 +219,10 @@ function parseNcxNavPoints(navPoints: XmlNode[], sourcePath: string): TocTargetN
   const result: TocTargetNode[] = [];
 
   for (const navPoint of navPoints) {
-    const children = parseNcxNavPoints(getDirectChildrenByLocalName(navPoint, 'navPoint'), sourcePath);
+    const children = parseNcxNavPoints(
+      getDirectChildrenByLocalName(navPoint, 'navPoint'),
+      sourcePath,
+    );
 
     const labelNode = getDirectChildrenByLocalName(navPoint, 'navLabel')[0];
     const contentNode = getDirectChildrenByLocalName(navPoint, 'content')[0];
@@ -455,7 +519,11 @@ function getTextContent(value: unknown): string {
   const parts: string[] = [];
 
   const directText = node['#text'];
-  if (typeof directText === 'string' || typeof directText === 'number' || typeof directText === 'boolean') {
+  if (
+    typeof directText === 'string' ||
+    typeof directText === 'number' ||
+    typeof directText === 'boolean'
+  ) {
     parts.push(String(directText));
   }
 

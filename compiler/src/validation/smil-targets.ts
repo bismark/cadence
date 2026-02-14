@@ -1,5 +1,10 @@
 import { posix } from 'node:path';
+import * as parse5 from 'parse5';
 import type { NormalizedContent, Page, Span } from '../types.js';
+
+type Node = parse5.DefaultTreeAdapterMap['node'];
+type Element = parse5.DefaultTreeAdapterMap['element'];
+type NodeWithChildNodes = Node & { childNodes: Node[] };
 
 export type SmilToDomIssueCode =
   | 'smil_textref_missing_fragment'
@@ -99,11 +104,7 @@ export function validateSmilToDomTargets(
       unresolvedSpanIds.add(span.id);
     }
 
-    if (
-      isTimedSpan(span) &&
-      !spanIdsWithRects.has(span.id) &&
-      !spanIdsWithTextRuns.has(span.id)
-    ) {
+    if (isTimedSpan(span) && !spanIdsWithRects.has(span.id) && !spanIdsWithTextRuns.has(span.id)) {
       issues.push({
         code: 'timed_span_without_geometry_text',
         chapterId: span.chapterId,
@@ -252,17 +253,39 @@ function normalizeEpubPath(path: string): string {
 
 function extractElementIds(html: string): Set<string> {
   const ids = new Set<string>();
-  const idPattern = /\bid\s*=\s*("([^"]+)"|'([^']+)'|([^\s"'>]+))/gi;
+  const document = parse5.parse(html);
+  collectElementIds(document, ids);
+  return ids;
+}
 
-  let match: RegExpExecArray | null;
-  while ((match = idPattern.exec(html)) !== null) {
-    const id = match[2] ?? match[3] ?? match[4] ?? '';
+function collectElementIds(node: Node, ids: Set<string>): void {
+  if (isElement(node)) {
+    const id = getElementId(node);
     if (id) {
       ids.add(id);
     }
   }
 
-  return ids;
+  if (!hasChildNodes(node)) {
+    return;
+  }
+
+  for (const child of node.childNodes) {
+    collectElementIds(child, ids);
+  }
+}
+
+function getElementId(element: Element): string | null {
+  const idAttr = element.attrs.find((attr) => attr.name === 'id');
+  return idAttr?.value ?? null;
+}
+
+function isElement(node: Node): node is Element {
+  return 'tagName' in node;
+}
+
+function hasChildNodes(node: Node): node is NodeWithChildNodes {
+  return 'childNodes' in node;
 }
 
 function isTimedSpan(span: Span): boolean {

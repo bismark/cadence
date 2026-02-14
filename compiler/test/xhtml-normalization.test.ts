@@ -94,6 +94,173 @@ describe('XHTML normalization', () => {
     }
   });
 
+  it('maps spans when textRef uses URI-encoded chapter path segments', async () => {
+    const chapterPath = 'OPS/chapter 1.xhtml';
+    const container = createInMemoryContainer({
+      [chapterPath]: `
+        <html xmlns="http://www.w3.org/1999/xhtml">
+          <head></head>
+          <body>
+            <p id="frag1">Hello world</p>
+          </body>
+        </html>
+      `,
+    });
+
+    const spans: Span[] = [
+      {
+        id: 'encoded-path-span',
+        chapterId: 'chapter-1',
+        textRef: 'OPS/chapter%201.xhtml#frag1',
+        audioSrc: 'audio.mp3',
+        clipBeginMs: 0,
+        clipEndMs: 1000,
+      },
+    ];
+
+    const normalized = await normalizeXHTML(
+      container,
+      chapterPath,
+      'chapter-1',
+      spans,
+      defaultProfile,
+    );
+
+    expect(normalized.html).toContain('data-span-id="encoded-path-span"');
+  });
+
+  it('maps fragment-only textRef targets to the current chapter', async () => {
+    const chapterPath = 'OPS/chapter-1.xhtml';
+    const container = createInMemoryContainer({
+      [chapterPath]: `
+        <html xmlns="http://www.w3.org/1999/xhtml">
+          <head></head>
+          <body>
+            <p id="frag1">Hello world</p>
+          </body>
+        </html>
+      `,
+    });
+
+    const spans: Span[] = [
+      {
+        id: 'fragment-only-span',
+        chapterId: 'chapter-1',
+        textRef: '#frag1',
+        audioSrc: 'audio.mp3',
+        clipBeginMs: 0,
+        clipEndMs: 1000,
+      },
+    ];
+
+    const normalized = await normalizeXHTML(
+      container,
+      chapterPath,
+      'chapter-1',
+      spans,
+      defaultProfile,
+    );
+
+    expect(normalized.html).toContain('data-span-id="fragment-only-span"');
+  });
+
+  it('preserves source order for interleaved publisher <link>/<style> nodes', async () => {
+    const chapterPath = 'OPS/chapter-1.xhtml';
+    const container = createInMemoryContainer({
+      [chapterPath]: `
+        <html xmlns="http://www.w3.org/1999/xhtml">
+          <head>
+            <link rel="stylesheet" href="styles/a.css" />
+            <style>.inline-b { color: #111; }</style>
+            <link rel="stylesheet" href="styles/c.css" />
+            <style>
+              @import url("https://evil.example.com/remote.css");
+              .inline-d { color: #222; }
+            </style>
+          </head>
+          <body>
+            <p id="frag1">Hello world</p>
+          </body>
+        </html>
+      `,
+    });
+
+    const spans: Span[] = [
+      {
+        id: 'span-1',
+        chapterId: 'chapter-1',
+        textRef: `${chapterPath}#frag1`,
+        audioSrc: 'audio.mp3',
+        clipBeginMs: 0,
+        clipEndMs: 1000,
+      },
+    ];
+
+    const normalized = await normalizeXHTML(
+      container,
+      chapterPath,
+      'chapter-1',
+      spans,
+      defaultProfile,
+    );
+
+    const linkAIndex = normalized.html.indexOf('href="styles/a.css"');
+    const inlineBIndex = normalized.html.indexOf('.inline-b { color: #111; }');
+    const linkCIndex = normalized.html.indexOf('href="styles/c.css"');
+    const inlineDIndex = normalized.html.indexOf('.inline-d { color: #222; }');
+
+    expect(linkAIndex).toBeGreaterThan(-1);
+    expect(inlineBIndex).toBeGreaterThan(linkAIndex);
+    expect(linkCIndex).toBeGreaterThan(inlineBIndex);
+    expect(inlineDIndex).toBeGreaterThan(linkCIndex);
+
+    expect(normalized.html).not.toContain('https://evil.example.com/remote.css');
+    expect(normalized.html).toContain('.inline-d { color: #222; }');
+  });
+
+  it('ignores fake <style> tags inside script text while still extracting real inline styles', async () => {
+    const chapterPath = 'OPS/chapter-1.xhtml';
+    const container = createInMemoryContainer({
+      [chapterPath]: `
+        <html xmlns="http://www.w3.org/1999/xhtml">
+          <head>
+            <style>
+              .real-inline { color: #222; }
+            </style>
+          </head>
+          <body>
+            <script>
+              const fake = '<style>.fake-from-script { color: #f00; }</style>';
+            </script>
+            <p id="frag1">Hello world</p>
+          </body>
+        </html>
+      `,
+    });
+
+    const spans: Span[] = [
+      {
+        id: 'span-1',
+        chapterId: 'chapter-1',
+        textRef: `${chapterPath}#frag1`,
+        audioSrc: 'audio.mp3',
+        clipBeginMs: 0,
+        clipEndMs: 1000,
+      },
+    ];
+
+    const normalized = await normalizeXHTML(
+      container,
+      chapterPath,
+      'chapter-1',
+      spans,
+      defaultProfile,
+    );
+
+    expect(normalized.html).toContain('.real-inline { color: #222; }');
+    expect(normalized.html).not.toContain('.fake-from-script { color: #f00; }');
+  });
+
   it('sanitizes unsafe publisher CSS constructs while keeping local styling', async () => {
     const chapterPath = 'OPS/chapter-1.xhtml';
     const container = createInMemoryContainer({

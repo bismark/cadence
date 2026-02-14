@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, posix, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import {
   expandEmptySentenceRanges,
@@ -168,13 +169,35 @@ program
     }
   });
 
-function isCliEntrypoint(): boolean {
-  const entrypointArg = process.argv[1];
+function resolveRealPathFromPath(path: string): string | null {
+  try {
+    return realpathSync(resolve(path));
+  } catch {
+    return null;
+  }
+}
+
+function resolveRealPathFromFileUrl(fileUrl: string): string | null {
+  try {
+    return realpathSync(fileURLToPath(fileUrl));
+  } catch {
+    return null;
+  }
+}
+
+export function isCliEntrypoint(
+  argv: readonly string[] = process.argv,
+  moduleUrl: string = import.meta.url,
+): boolean {
+  const entrypointArg = argv[1];
   if (!entrypointArg) {
     return false;
   }
 
-  return import.meta.url === pathToFileURL(entrypointArg).href;
+  const entrypointPath = resolveRealPathFromPath(entrypointArg);
+  const modulePath = resolveRealPathFromFileUrl(moduleUrl);
+
+  return entrypointPath !== null && modulePath !== null && entrypointPath === modulePath;
 }
 
 if (isCliEntrypoint()) {

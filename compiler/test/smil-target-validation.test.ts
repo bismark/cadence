@@ -164,6 +164,47 @@ describe('validateSmilToDomTargets', () => {
     });
   });
 
+  it('indexes only real id attributes and ignores data-span-id', () => {
+    const spans = [makeSpan({ id: 's-data-attr', textRef: 'OEBPS/ch1.xhtml#s-data-attr' })];
+    const pages = [
+      makePage({
+        spanRects: [
+          {
+            spanId: 's-data-attr',
+            rects: [{ x: 10, y: 20, width: 120, height: 24 }],
+          },
+        ],
+        textRuns: [
+          {
+            text: 'Hello',
+            x: 10,
+            y: 20,
+            width: 120,
+            height: 24,
+            baselineY: 38,
+            spanId: 's-data-attr',
+            style: baseStyle,
+          },
+        ],
+      }),
+    ];
+    const normalizedContents = [
+      makeContent({
+        html: '<!doctype html><html><body><p data-span-id="s-data-attr">Hello</p></body></html>',
+        spanIds: ['s-data-attr'],
+      }),
+    ];
+
+    const result = validateSmilToDomTargets(spans, pages, normalizedContents);
+
+    expect(result.unresolvedTextRefCount).toBe(1);
+    expect(result.timedSpansWithoutGeometryCount).toBe(0);
+    expect(result.issues[0]).toMatchObject({
+      code: 'smil_textref_fragment_not_found',
+      spanId: 's-data-attr',
+    });
+  });
+
   it('reports timed spans with no mapped geometry/text', () => {
     const spans = [makeSpan({ id: 's-unmapped', textRef: 'OEBPS/ch1.xhtml#p1' })];
     const normalizedContents = [makeContent({ spanIds: ['s-unmapped'] })];
